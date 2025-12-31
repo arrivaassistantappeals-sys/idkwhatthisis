@@ -10,7 +10,8 @@ local LocalPlayer = game.Players.LocalPlayer
 local WHITELIST = {
 	[1325117607] = "arrivabus415",
 	[115211703] = "00FSwedish",
-	[9225934804] = "imagine2v1_L"
+	[9225934804] = "imagine2v1_L",
+	[9224990669] = "EZTCU4"
 }
 
 if WHITELIST[LocalPlayer.UserId] ~= LocalPlayer.Name then
