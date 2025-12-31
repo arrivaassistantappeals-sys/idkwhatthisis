@@ -11,7 +11,8 @@ local WHITELIST = {
 	[1325117607] = "arrivabus415",
 	[115211703] = "00FSwedish",
 	[9225934804] = "imagine2v1_L",
-	[9224990669] = "EZTCU4"
+	[9224990669] = "EZTCU4",
+	[9742385779] = "j_91auratuffboi13",
 }
 
 if WHITELIST[LocalPlayer.UserId] ~= LocalPlayer.Name then
