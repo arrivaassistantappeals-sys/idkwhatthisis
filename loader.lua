@@ -1798,7 +1798,7 @@ local function handleCreatureGrab(targetPlayer)
 end
 
 TargetGroup:AddToggle({
-	Name = "Loop Kick (Blobman)",
+	Text = "Loop Kick (Blobman)",
 	Default = false,
 	Callback = function(on)
 		loopKickEnabled = on
