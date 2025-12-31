@@ -23,6 +23,7 @@ local WHITELIST = {
 	[9016653597] = "Lotokoto777",
 	[4163542745] = "Auri_lubieplacki22",
 	[1310436801] = "Danielrbl21",
+	[9668498177] = "ezzz_FO",
 }
 
 if WHITELIST[LocalPlayer.UserId] ~= LocalPlayer.Name then
