@@ -1732,7 +1732,6 @@ end
 local function handleCreatureGrab(targetPlayer)
 	if not targetPlayer or targetPlayer.Parent ~= playersService then return end
 	if not isPlayerSeatedInBlobman() then return end
-	if isAuthorized(targetPlayer) then return end
 
 	local char = localPlayer.Character
 	local hum = char and char:FindFirstChildOfClass("Humanoid")
