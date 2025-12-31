@@ -2534,40 +2534,38 @@ local function startMasslessGrab()
 		task.spawn(function()
 			task.wait(0.05)
 
-			local grabPart = v:FindFirstChild("GrabPart")
-			local weld = grabPart and grabPart:FindFirstChild("WeldConstraint")
-			local targetChar = weld and weld.Part1 and weld.Part1.Parent
+			local dragPart = v:FindFirstChild("DragPart")
+			if not dragPart then return end
 
-			if not (grabPart and targetChar and targetChar:IsA("Model")) then
-				return
+			local alignOri = dragPart:FindFirstChild("AlignOrientation")
+			local alignPos = dragPart:FindFirstChild("AlignPosition")
+			if not (alignOri and alignPos) then return end
+
+			-- save originals
+			local oriTorque = alignOri.MaxTorque
+			local oriOriResp = alignOri.Responsiveness
+			local oriForce = alignPos.MaxForce
+			local oriPosResp = alignPos.Responsiveness
+
+			-- overpower while grabbed
+			while masslessGrabEnabled and v.Parent do
+				alignOri.MaxTorque = 1e46
+				alignOri.Responsiveness = 20099
+
+				alignPos.MaxForce = 1e51
+				alignPos.Responsiveness = 20099
+
+				task.wait(0.25)
 			end
 
-			local parts = {}
-			local originalMass = {}
-
-			-- collect valid parts
-			for _, d in ipairs(targetChar:GetDescendants()) do
-				if d:IsA("BasePart") and not d.Anchored then
-					parts[#parts + 1] = d
-					originalMass[d] = d.Massless
-				end
+			-- restore on release
+			if alignOri then
+				alignOri.MaxTorque = oriTorque
+				alignOri.Responsiveness = oriOriResp
 			end
-
-			-- apply massless while grabbed
-			while masslessGrabEnabled and grabPart.Parent do
-				for _, part in ipairs(parts) do
-					if part and part.Parent and not part.Anchored then
-						part.Massless = true
-					end
-				end
-				task.wait(0.2)
-			end
-
-			-- restore original mass state
-			for part, state in pairs(originalMass) do
-				if part and part.Parent then
-					part.Massless = state
-				end
+			if alignPos then
+				alignPos.MaxForce = oriForce
+				alignPos.Responsiveness = oriPosResp
 			end
 		end)
 	end)
@@ -2592,6 +2590,7 @@ GrabGroup:AddToggle("MasslessGrabToggle", {
 		end
 	end
 })
+
 
 
 local killGrabEnabled = false
