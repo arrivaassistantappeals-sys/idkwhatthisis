@@ -15,6 +15,7 @@ local WHITELIST = {
 	[9742385779] = "j_91auratuffboi13",
 	[9016653597] = "Lotokoto777",
 	[4163542745] = "Auri_lubieplacki22",
+	[1310436801] = "Danielrbl21",
 }
 
 local ADMIN_IDS = {
