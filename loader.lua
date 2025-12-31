@@ -475,60 +475,102 @@ DefenseGroup:AddToggle("AntiGrabObsidian", {
 	end
 })
 
-local antiBlobEnabled = false
-local antiBlobConn
+--// Services
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
 
-local function disableBlobman(blob)
-	if not blob or blob.Name ~= "CreatureBlobman" then return end
+--// Player
+local localPlayer = Players.LocalPlayer
 
-	task.defer(function()
-		local left = blob:FindFirstChild("LeftDetector", true)
-		local right = blob:FindFirstChild("RightDetector", true)
+--// State
+local antiBlobGrabEnabled = false
+local antiBlobTask
 
-		if left then left:Destroy() end
-		if right then right:Destroy() end
+--// Core grab breaker
+local function breakBlobmanGrab(character)
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	if not hrp then return end
+
+	for _, blob in ipairs(Workspace:GetDescendants()) do
+		if blob.Name == "CreatureBlobman" then
+			local seatScript = blob:FindFirstChild("BlobmanSeatAndOwnerScript")
+			local leftDetector = blob:FindFirstChild("LeftDetector", true)
+
+			-- 1️⃣ Destroy grab weld (actual grab)
+			if leftDetector then
+				local weld = leftDetector:FindFirstChild("LeftWeld")
+				if weld then
+					weld:Destroy()
+				end
+			end
+
+			-- 2️⃣ Force server-side drop
+			if seatScript and seatScript:FindFirstChild("CreatureDrop") then
+				pcall(function()
+					seatScript.CreatureDrop:FireServer(
+						leftDetector and leftDetector.LeftWeld,
+						hrp
+					)
+				end)
+			end
+
+			-- 3️⃣ Kill grab line if the game uses one
+			if destroyGrabLineEvent then
+				pcall(function()
+					destroyGrabLineEvent:FireServer(hrp)
+				end)
+			end
+		end
+	end
+end
+
+--// Loop (authoritative – runs every frame)
+local function startAntiBlobGrab()
+	if antiBlobTask then
+		task.cancel(antiBlobTask)
+	end
+
+	antiBlobTask = task.spawn(function()
+		while antiBlobGrabEnabled do
+			local char = localPlayer.Character
+			if char then
+				breakBlobmanGrab(char)
+			end
+			RunService.Heartbeat:Wait()
+		end
 	end)
 end
 
-local function enableAntiBlobman()
-	if antiBlobConn then antiBlobConn:Disconnect() end
-
-	-- handle existing blobmen
-	for _, obj in ipairs(Workspace:GetDescendants()) do
-		if obj.Name == "CreatureBlobman" then
-			disableBlobman(obj)
-		end
-	end
-
-	-- watch for new ones
-	antiBlobConn = Workspace.DescendantAdded:Connect(function(obj)
-		if not antiBlobEnabled then return end
-		if obj.Name == "CreatureBlobman" then
-			disableBlobman(obj)
-		end
-	end)
-end
-
-local function disableAntiBlobman()
-	antiBlobEnabled = false
-	if antiBlobConn then
-		antiBlobConn:Disconnect()
-		antiBlobConn = nil
+local function stopAntiBlobGrab()
+	if antiBlobTask then
+		task.cancel(antiBlobTask)
+		antiBlobTask = nil
 	end
 end
 
+--// Respawn safety
+localPlayer.CharacterAdded:Connect(function()
+	if antiBlobGrabEnabled then
+		task.wait(0.3)
+		startAntiBlobGrab()
+	end
+end)
+
+--// Toggle (fits your system)
 DefenseGroup:AddToggle("AntiBlobmanToggle", {
-	Text = "Anti Blobman",
+	Text = "Anti Blobman Grab",
 	Default = false,
 	Callback = function(on)
-		antiBlobEnabled = on
+		antiBlobGrabEnabled = on
 		if on then
-			enableAntiBlobman()
+			startAntiBlobGrab()
 		else
-			disableAntiBlobman()
+			stopAntiBlobGrab()
 		end
 	end
 })
+
 
 local antiExplodeT=false
 local function antiExplodeF()
