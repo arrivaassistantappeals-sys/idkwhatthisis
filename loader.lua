@@ -475,21 +475,58 @@ DefenseGroup:AddToggle("AntiGrabObsidian", {
 	end
 })
 
-local antiBlob1T=false
-local function antiBlob1F()
-	antiBlob1T=true
-	workspace.DescendantAdded:Connect(function(toy)
-		if toy.Name=="CreatureBlobman" and antiBlob1T then
-			toy.LeftDetector:Destroy()
-			toy.RightDetector:Destroy()
+local antiBlobEnabled = false
+local antiBlobConn
+
+local function disableBlobman(blob)
+	if not blob or blob.Name ~= "CreatureBlobman" then return end
+
+	task.defer(function()
+		local left = blob:FindFirstChild("LeftDetector", true)
+		local right = blob:FindFirstChild("RightDetector", true)
+
+		if left then left:Destroy() end
+		if right then right:Destroy() end
+	end)
+end
+
+local function enableAntiBlobman()
+	if antiBlobConn then antiBlobConn:Disconnect() end
+
+	-- handle existing blobmen
+	for _, obj in ipairs(Workspace:GetDescendants()) do
+		if obj.Name == "CreatureBlobman" then
+			disableBlobman(obj)
+		end
+	end
+
+	-- watch for new ones
+	antiBlobConn = Workspace.DescendantAdded:Connect(function(obj)
+		if not antiBlobEnabled then return end
+		if obj.Name == "CreatureBlobman" then
+			disableBlobman(obj)
 		end
 	end)
 end
+
+local function disableAntiBlobman()
+	antiBlobEnabled = false
+	if antiBlobConn then
+		antiBlobConn:Disconnect()
+		antiBlobConn = nil
+	end
+end
+
 DefenseGroup:AddToggle("AntiBlobmanToggle", {
-	Text="Anti Blobman", 
-	Default=false,
-	Callback=function(on)
-		if on then antiBlob1F() else antiBlob1T=false end
+	Text = "Anti Blobman",
+	Default = false,
+	Callback = function(on)
+		antiBlobEnabled = on
+		if on then
+			enableAntiBlobman()
+		else
+			disableAntiBlobman()
+		end
 	end
 })
 
@@ -1708,116 +1745,6 @@ TargetGroup:AddToggle("DualHandLoopKick", {
 	end
 })
 
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-
-local localPlayer = Players.LocalPlayer
-local playersService = Players
-
-local function isPlayerSeatedInBlobman()
-	local char = localPlayer.Character
-	if not char then return false end
-
-	local hum = char:FindFirstChildOfClass("Humanoid")
-	if not hum or not hum.Sit then return false end
-
-	local seat = hum.SeatPart
-	if not seat or not seat.Parent then return false end
-	if seat.Parent.Name ~= "CreatureBlobman" then return false end
-
-	_G.LastBlobmanWasSeat = seat.Parent
-	return true
-end
-
-local function handleCreatureGrab(targetPlayer)
-	if not targetPlayer or targetPlayer.Parent ~= playersService then return end
-	if not isPlayerSeatedInBlobman() then return end
-
-	local char = localPlayer.Character
-	local hum = char and char:FindFirstChildOfClass("Humanoid")
-	if not hum or not hum.SeatPart then return end
-
-	local seatParent = hum.SeatPart.Parent
-	if not seatParent or not seatParent:FindFirstChild("BlobmanSeatAndOwnerScript") then return end
-
-	local targetChar = targetPlayer.Character
-	local targetHRP = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
-	if not targetHRP then return end
-
-	local grabRemote = seatParent.BlobmanSeatAndOwnerScript.CreatureGrab
-	local dropRemote = seatParent.BlobmanSeatAndOwnerScript.CreatureDrop
-
-	local grabParams = {
-		seatParent.LeftDetector,
-		targetHRP,
-		seatParent.LeftDetector.LeftWeld
-	}
-
-	local dropParams = {
-		seatParent.LeftDetector.LeftWeld,
-		targetHRP
-	}
-
-	-- grab spam (authoritative part)
-	for i = 1, 60 do
-		if not isPlayerSeatedInBlobman() then break end
-		if not targetPlayer.Parent then break end
-
-		grabRemote:FireServer(unpack(grabParams))
-		RunService.Heartbeat:Wait()
-	end
-
-	-- kick phase
-	local humanoid = targetChar:FindFirstChildOfClass("Humanoid")
-	if humanoid and humanoid.Health > 0 then
-		targetChar:SetAttribute("Kicking", true)
-
-		if not targetHRP:FindFirstChild("KickAuraVelocity") then
-			local bv = Instance.new("BodyVelocity")
-			bv.Name = "KickAuraVelocity"
-			bv.MaxForce = Vector3.new(0, 15000, 0)
-			bv.Velocity = Vector3.new(0, 110, 0)
-			bv.Parent = targetHRP
-		end
-
-		for i = 1, 80 do
-			if not isPlayerSeatedInBlobman() then break end
-			if humanoid.FloorMaterial == Enum.Material.Air
-				and localPlayer:DistanceFromCharacter(targetHRP.Position) > 100 then
-				grabRemote:FireServer(targetHRP)
-				dropRemote:FireServer(unpack(dropParams))
-				break
-			end
-			RunService.Heartbeat:Wait()
-		end
-
-		local vel = targetHRP:FindFirstChild("KickAuraVelocity")
-		if vel then vel:Destroy() end
-		targetChar:SetAttribute("Kicking", nil)
-	end
-end
-
-TargetGroup:AddToggle("lkickblob", {
-	Text = "Loop Kick (Blobman)",
-	Default = false,
-	Callback = function(on)
-		loopKickEnabled = on
-
-		if on then
-			task.spawn(function()
-				while loopKickEnabled do
-					local target = selectedKickPlayer
-					if target and isPlayerSeatedInBlobman() then
-						handleCreatureGrab(target)
-					end
-					RunService.Heartbeat:Wait()
-				end
-			end)
-		end
-	end,
-	Save = true,
-	Flag = "lkick_toggle"
-})
 
 
 local playerFlingActive = false
