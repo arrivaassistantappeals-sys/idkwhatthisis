@@ -13,6 +13,8 @@ local WHITELIST = {
 	[9225934804] = "imagine2v1_L",
 	[9224990669] = "EZTCU4",
 	[9742385779] = "j_91auratuffboi13",
+	[9016653597] = "Lotokoto777",
+	[4163542745] = "Auri_lubieplacki22",
 }
 
 if WHITELIST[LocalPlayer.UserId] ~= LocalPlayer.Name then
@@ -71,7 +73,7 @@ local function notify(title, content, duration)
 end
 
 local function sendHubLoadedMessage()
-	local message = "Arriva Core Hub V 1.3 Loaded... | The vengeance has begun!"
+	local message = "Arriva Core Hub V 1.3 Loaded... | Don't cry now..."
 	local sent = false
 	pcall(function()
 		local TextChatService = game:GetService("TextChatService")
