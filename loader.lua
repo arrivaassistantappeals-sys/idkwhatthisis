@@ -1784,7 +1784,7 @@ local function handleCreatureGrab(targetPlayer)
 			if not isPlayerSeatedInBlobman() then break end
 			if humanoid.FloorMaterial == Enum.Material.Air
 				and localPlayer:DistanceFromCharacter(targetHRP.Position) > 100 then
-				destroyGrabLineEvent:FireServer(targetHRP)
+				GE:FireServer(targetHRP)
 				dropRemote:FireServer(unpack(dropParams))
 				break
 			end
@@ -1797,7 +1797,7 @@ local function handleCreatureGrab(targetPlayer)
 	end
 end
 
-TargetGroup:AddToggle({
+TargetGroup:AddToggle("lkickblob", {
 	Text = "Loop Kick (Blobman)",
 	Default = false,
 	Callback = function(on)
