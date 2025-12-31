@@ -1784,7 +1784,7 @@ local function handleCreatureGrab(targetPlayer)
 			if not isPlayerSeatedInBlobman() then break end
 			if humanoid.FloorMaterial == Enum.Material.Air
 				and localPlayer:DistanceFromCharacter(targetHRP.Position) > 100 then
-				GE:FireServer(targetHRP)
+				grabRemote:FireServer(targetHRP)
 				dropRemote:FireServer(unpack(dropParams))
 				break
 			end
