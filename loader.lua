@@ -26,6 +26,8 @@ local WHITELIST = {
 	[9668498177] = "ezzz_FO",
 }
 
+
+--// Whitelist check
 if WHITELIST[LocalPlayer.UserId] ~= LocalPlayer.Name then
 	LocalPlayer:Kick("Nah not today bruh. find ur own shit to use.")
 	return
@@ -518,47 +520,90 @@ DefenseGroup:AddToggle("AntiExplosionToggle", {
 })
 
 local hookBurnConn
+local burnLoopTask
+local antiBurnEnabled = false
+
+local function stopBurnLoop()
+	if burnLoopTask then
+		task.cancel(burnLoopTask)
+		burnLoopTask = nil
+	end
+end
+
 local function hookBurn(char)
+	stopBurnLoop()
+
 	local hum = char:WaitForChild("Humanoid")
 	local hrp = char:WaitForChild("HumanoidRootPart")
 	char.PrimaryPart = hrp
-	if hookBurnConn then hookBurnConn:Disconnect() end
-	hookBurnConn = hum.FireDebounce.Changed:Connect(function(isBurning)
-		if isBurning then
-			local me = char
-			local oldCF = hrp.CFrame
-			local plots = workspace:FindFirstChild("Plots")
-			if plots and plots:FindFirstChild("Plot2") then
-				local plot2 = plots.Plot2
-				local barrier = plot2:FindFirstChild("Barrier")
+
+	burnLoopTask = task.spawn(function()
+		while antiBurnEnabled and hum.Parent do
+			local fireDebounce = hum:FindFirstChild("FireDebounce")
+			if fireDebounce and fireDebounce.Value then
+
+				local oldCF = hrp.CFrame
+
+				local plots = workspace:FindFirstChild("Plots")
+				local plot2 = plots and plots:FindFirstChild("Plot2")
+				local barrier = plot2 and plot2:FindFirstChild("Barrier")
 				local pb = barrier and barrier:FindFirstChild("PlotBarrier")
+
 				if pb and pb:IsA("BasePart") then
-					local safeCF = pb.CFrame * CFrame.new(0, 6, 0)
-					me:SetPrimaryPartCFrame(safeCF)
-					task.wait(0.3)
-					local firePart = me:FindFirstChild("FirePlayerPart", true)
-					if firePart then
-						for _, obj in ipairs(firePart:GetChildren()) do
-							if obj:IsA("Sound") then obj:Stop() end
-							if obj:IsA("Light") or obj:IsA("ParticleEmitter") then obj.Enabled = false end
+					-- move to safe spot
+					char:SetPrimaryPartCFrame(pb.CFrame * CFrame.new(0, 6, 0))
+				end
+
+				-- aggressively suppress fire
+				local firePart = char:FindFirstChild("FirePlayerPart", true)
+				if firePart then
+					for _, obj in ipairs(firePart:GetDescendants()) do
+						if obj:IsA("Sound") then
+							obj:Stop()
+						elseif obj:IsA("ParticleEmitter") or obj:IsA("Light") then
+							obj.Enabled = false
+						elseif obj:IsA("BoolValue") and obj.Name == "CanBurn" then
+							obj.Value = false
 						end
-						if firePart:FindFirstChild("CanBurn") then firePart.CanBurn.Value = false end
-						if hum:FindFirstChild("FireDebounce") then hum.FireDebounce.Value = false end
 					end
-					task.wait(0.6)
-					if me and me.PrimaryPart then me:SetPrimaryPartCFrame(oldCF) end
+				end
+
+				fireDebounce.Value = false
+
+				task.wait(0.2)
+				if char and char.PrimaryPart then
+					char:SetPrimaryPartCFrame(oldCF)
 				end
 			end
+
+			task.wait(0.1)
 		end
 	end)
 end
+
+-- character respawn safe
+Player.CharacterAdded:Connect(function(char)
+	if antiBurnEnabled then
+		hookBurn(char)
+	end
+end)
+
 DefenseGroup:AddToggle("AntiBurnToggle", {
 	Text = "Anti Burn",
 	Default = false,
 	Callback = function(on)
-		if on then hookBurn(Player.Character) elseif hookBurnConn then hookBurnConn:Disconnect() end
+		antiBurnEnabled = on
+
+		if on then
+			if Player.Character then
+				hookBurn(Player.Character)
+			end
+		else
+			stopBurnLoop()
+		end
 	end
 })
+
 
 local antiVoidConn
 local VOID_THRESHOLD = -50
