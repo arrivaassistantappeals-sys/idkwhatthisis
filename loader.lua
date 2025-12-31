@@ -475,102 +475,23 @@ DefenseGroup:AddToggle("AntiGrabObsidian", {
 	end
 })
 
---// Services
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local Workspace = game:GetService("Workspace")
-
---// Player
-local localPlayer = Players.LocalPlayer
-
---// State
-local antiBlobGrabEnabled = false
-local antiBlobTask
-
---// Core grab breaker
-local function breakBlobmanGrab(character)
-	local hrp = character:FindFirstChild("HumanoidRootPart")
-	if not hrp then return end
-
-	for _, blob in ipairs(Workspace:GetDescendants()) do
-		if blob.Name == "CreatureBlobman" then
-			local seatScript = blob:FindFirstChild("BlobmanSeatAndOwnerScript")
-			local leftDetector = blob:FindFirstChild("LeftDetector", true)
-
-			-- 1️⃣ Destroy grab weld (actual grab)
-			if leftDetector then
-				local weld = leftDetector:FindFirstChild("LeftWeld")
-				if weld then
-					weld:Destroy()
-				end
-			end
-
-			-- 2️⃣ Force server-side drop
-			if seatScript and seatScript:FindFirstChild("CreatureDrop") then
-				pcall(function()
-					seatScript.CreatureDrop:FireServer(
-						leftDetector and leftDetector.LeftWeld,
-						hrp
-					)
-				end)
-			end
-
-			-- 3️⃣ Kill grab line if the game uses one
-			if destroyGrabLineEvent then
-				pcall(function()
-					destroyGrabLineEvent:FireServer(hrp)
-				end)
-			end
-		end
-	end
-end
-
---// Loop (authoritative – runs every frame)
-local function startAntiBlobGrab()
-	if antiBlobTask then
-		task.cancel(antiBlobTask)
-	end
-
-	antiBlobTask = task.spawn(function()
-		while antiBlobGrabEnabled do
-			local char = localPlayer.Character
-			if char then
-				breakBlobmanGrab(char)
-			end
-			RunService.Heartbeat:Wait()
+local antiBlob1T=false
+local function antiBlob1F()
+	antiBlob1T=true
+	workspace.DescendantAdded:Connect(function(toy)
+		if toy.Name=="CreatureBlobman" and antiBlob1T then
+			toy.LeftDetector:Destroy()
+			toy.RightDetector:Destroy()
 		end
 	end)
 end
-
-local function stopAntiBlobGrab()
-	if antiBlobTask then
-		task.cancel(antiBlobTask)
-		antiBlobTask = nil
-	end
-end
-
---// Respawn safety
-localPlayer.CharacterAdded:Connect(function()
-	if antiBlobGrabEnabled then
-		task.wait(0.3)
-		startAntiBlobGrab()
-	end
-end)
-
---// Toggle (fits your system)
 DefenseGroup:AddToggle("AntiBlobmanToggle", {
-	Text = "Anti Blobman Grab",
-	Default = false,
-	Callback = function(on)
-		antiBlobGrabEnabled = on
-		if on then
-			startAntiBlobGrab()
-		else
-			stopAntiBlobGrab()
-		end
+	Text="Anti Blobman", 
+	Default=false,
+	Callback=function(on)
+		if on then antiBlob1F() else antiBlob1T=false end
 	end
 })
-
 
 local antiExplodeT=false
 local function antiExplodeF()
