@@ -1620,7 +1620,7 @@ TargetGroup:AddToggle("LoopKickToggle", {
 
 local loopKickDualActive = false
 TargetGroup:AddToggle("DualHandLoopKick", {
-	Text = "Loop Kick",
+	Text = "Loop Kick (blob)",
 	Default = false,
 	Callback = function(on)
 		loopKickDualActive = on
@@ -1707,6 +1707,119 @@ TargetGroup:AddToggle("DualHandLoopKick", {
 		end
 	end
 })
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+local localPlayer = Players.LocalPlayer
+local playersService = Players
+
+local function isPlayerSeatedInBlobman()
+	local char = localPlayer.Character
+	if not char then return false end
+
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if not hum or not hum.Sit then return false end
+
+	local seat = hum.SeatPart
+	if not seat or not seat.Parent then return false end
+	if seat.Parent.Name ~= "CreatureBlobman" then return false end
+
+	_G.LastBlobmanWasSeat = seat.Parent
+	return true
+end
+
+local function handleCreatureGrab(targetPlayer)
+	if not targetPlayer or targetPlayer.Parent ~= playersService then return end
+	if not isPlayerSeatedInBlobman() then return end
+	if isAuthorized(targetPlayer) then return end
+
+	local char = localPlayer.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not hum or not hum.SeatPart then return end
+
+	local seatParent = hum.SeatPart.Parent
+	if not seatParent or not seatParent:FindFirstChild("BlobmanSeatAndOwnerScript") then return end
+
+	local targetChar = targetPlayer.Character
+	local targetHRP = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
+	if not targetHRP then return end
+
+	local grabRemote = seatParent.BlobmanSeatAndOwnerScript.CreatureGrab
+	local dropRemote = seatParent.BlobmanSeatAndOwnerScript.CreatureDrop
+
+	local grabParams = {
+		seatParent.LeftDetector,
+		targetHRP,
+		seatParent.LeftDetector.LeftWeld
+	}
+
+	local dropParams = {
+		seatParent.LeftDetector.LeftWeld,
+		targetHRP
+	}
+
+	-- grab spam (authoritative part)
+	for i = 1, 60 do
+		if not isPlayerSeatedInBlobman() then break end
+		if not targetPlayer.Parent then break end
+
+		grabRemote:FireServer(unpack(grabParams))
+		RunService.Heartbeat:Wait()
+	end
+
+	-- kick phase
+	local humanoid = targetChar:FindFirstChildOfClass("Humanoid")
+	if humanoid and humanoid.Health > 0 then
+		targetChar:SetAttribute("Kicking", true)
+
+		if not targetHRP:FindFirstChild("KickAuraVelocity") then
+			local bv = Instance.new("BodyVelocity")
+			bv.Name = "KickAuraVelocity"
+			bv.MaxForce = Vector3.new(0, 15000, 0)
+			bv.Velocity = Vector3.new(0, 110, 0)
+			bv.Parent = targetHRP
+		end
+
+		for i = 1, 80 do
+			if not isPlayerSeatedInBlobman() then break end
+			if humanoid.FloorMaterial == Enum.Material.Air
+				and localPlayer:DistanceFromCharacter(targetHRP.Position) > 100 then
+				destroyGrabLineEvent:FireServer(targetHRP)
+				dropRemote:FireServer(unpack(dropParams))
+				break
+			end
+			RunService.Heartbeat:Wait()
+		end
+
+		local vel = targetHRP:FindFirstChild("KickAuraVelocity")
+		if vel then vel:Destroy() end
+		targetChar:SetAttribute("Kicking", nil)
+	end
+end
+
+TargetGroup:AddToggle({
+	Name = "Loop Kick (Blobman)",
+	Default = false,
+	Callback = function(on)
+		loopKickEnabled = on
+
+		if on then
+			task.spawn(function()
+				while loopKickEnabled do
+					local target = selectedKickPlayer
+					if target and isPlayerSeatedInBlobman() then
+						handleCreatureGrab(target)
+					end
+					RunService.Heartbeat:Wait()
+				end
+			end)
+		end
+	end,
+	Save = true,
+	Flag = "lkick_toggle"
+})
+
 
 local playerFlingActive = false
 local flingBAV = nil
