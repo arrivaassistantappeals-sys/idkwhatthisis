@@ -2521,6 +2521,78 @@ GrabGroup:AddToggle("NoclipGrabToggle", {
 	end
 })
 
+local masslessGrabEnabled = false
+local masslessConnection
+
+local function startMasslessGrab()
+	if masslessConnection then return end
+
+	masslessConnection = workspace.ChildAdded:Connect(function(v)
+		if not masslessGrabEnabled then return end
+		if not (v:IsA("Model") and v.Name == "GrabParts") then return end
+
+		task.spawn(function()
+			task.wait(0.05)
+
+			local grabPart = v:FindFirstChild("GrabPart")
+			local weld = grabPart and grabPart:FindFirstChild("WeldConstraint")
+			local targetChar = weld and weld.Part1 and weld.Part1.Parent
+
+			if not (grabPart and targetChar and targetChar:IsA("Model")) then
+				return
+			end
+
+			local parts = {}
+			local originalMass = {}
+
+			-- collect valid parts
+			for _, d in ipairs(targetChar:GetDescendants()) do
+				if d:IsA("BasePart") and not d.Anchored then
+					parts[#parts + 1] = d
+					originalMass[d] = d.Massless
+				end
+			end
+
+			-- apply massless while grabbed
+			while masslessGrabEnabled and grabPart.Parent do
+				for _, part in ipairs(parts) do
+					if part and part.Parent and not part.Anchored then
+						part.Massless = true
+					end
+				end
+				task.wait(0.2)
+			end
+
+			-- restore original mass state
+			for part, state in pairs(originalMass) do
+				if part and part.Parent then
+					part.Massless = state
+				end
+			end
+		end)
+	end)
+end
+
+local function stopMasslessGrab()
+	if masslessConnection then
+		masslessConnection:Disconnect()
+		masslessConnection = nil
+	end
+end
+
+GrabGroup:AddToggle("MasslessGrabToggle", {
+	Text = "Massless Grab",
+	Default = false,
+	Callback = function(on)
+		masslessGrabEnabled = on
+		if on then
+			startMasslessGrab()
+		else
+			stopMasslessGrab()
+		end
+	end
+})
+
 
 local killGrabEnabled = false
 local grabConnection
