@@ -1020,6 +1020,8 @@ TargetGroup:AddButton({
 })
 
 
+
+
 TargetGroup:AddToggle("LoopKickToggle", {
 	Text = "Kick (spam grab)",
 	Default = false,
@@ -1908,7 +1910,7 @@ TargetGroup:AddToggle("DestroyTargetGucci", {
 })
 
 TargetGroup:AddButton({
-	Text = "bring",
+	Text = "bring (blob)",
 	Func = function()
 		if not selectedKickPlayer then 
 			return 
@@ -1970,6 +1972,239 @@ TargetGroup:AddButton({
 			end
 			task.wait(0.03)
 		end
+	end
+})
+
+TargetGroup:AddButton({
+	Text = "Bring All (grab)",
+	Func = function()
+		task.spawn(function()
+			local RS = game:GetService("ReplicatedStorage")
+			local RunService = game:GetService("RunService")
+			local Players = game:GetService("Players")
+			local GE = RS:WaitForChild("GrabEvents")
+
+			local myChar = Player.Character
+			local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+			if not myRoot then return end
+
+			local savedPos = myRoot.CFrame
+
+			for _, target in ipairs(Players:GetPlayers()) do
+				if target == Player then continue end
+
+				-- ⛔ skip players in plot
+				local inPlot = target:FindFirstChild("InPlot")
+				if inPlot and inPlot.Value == true then
+					continue
+				end
+
+				local tChar = target.Character
+				local tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")
+				local tHum = tChar and tChar:FindFirstChild("Humanoid")
+
+				if not (tRoot and tHum and tHum.Health > 0) then
+					continue
+				end
+
+				local dragging = false
+				local grabStartTime = 0
+
+				local start = tick()
+				while tRoot.Parent
+					and tHum.Health > 0
+					and tick() - start < 0.9
+				do
+					-- reset velocities
+					tRoot.AssemblyLinearVelocity = Vector3.zero
+					tRoot.AssemblyAngularVelocity = Vector3.zero
+					tRoot.Velocity = Vector3.zero
+
+					if not dragging then
+						-- snap to target to grab
+						myRoot.CFrame = tRoot.CFrame
+						myRoot.Velocity = Vector3.zero
+
+						pcall(function()
+							tHum.PlatformStand = true
+							tHum.Sit = true
+							GE.SetNetworkOwner:FireServer(
+								tRoot,
+								CFrame.new(myRoot.Position, tRoot.Position)
+							)
+							GE.CreateGrabLine:FireServer(
+								tRoot,
+								Vector3.zero,
+								tRoot.Position,
+								false
+							)
+						end)
+
+						if grabStartTime == 0 then
+							grabStartTime = tick()
+						end
+
+						if tick() - grabStartTime > 0.35 then
+							dragging = true
+							grabStartTime = 0
+						end
+					else
+						-- bring them to you
+						myRoot.CFrame = savedPos
+						myRoot.Velocity = Vector3.zero
+
+						local lockPos = savedPos * CFrame.new(0, 17, 0)
+
+						tRoot.CFrame = lockPos
+						tRoot.Velocity = Vector3.zero
+						tRoot.RotVelocity = Vector3.zero
+
+						tHum.PlatformStand = true
+						tHum.Sit = false
+
+						pcall(function()
+							GE.SetNetworkOwner:FireServer(tRoot, lockPos)
+							GE.CreateGrabLine:FireServer(
+								tRoot,
+								Vector3.zero,
+								tRoot.Position,
+								false
+							)
+						end)
+					end
+
+					RunService.Heartbeat:Wait()
+				end
+
+				-- 🔓 RELEASE (same as toggle off)
+				pcall(function()
+					tHum.PlatformStand = false
+					tHum.Sit = false
+					GE.DestroyGrabLine:FireServer(tRoot)
+				end)
+
+				task.wait(0.15)
+			end
+
+			-- return you cleanly
+			if myRoot then
+				myRoot.CFrame = savedPos
+				myRoot.Velocity = Vector3.zero
+			end
+		end)
+	end
+})
+
+
+TargetGroup:AddButton({
+	Text = "Bring (grab)",
+	Func = function()
+		task.spawn(function()
+			local target = selectedKickPlayer
+			if not target then return end
+
+			-- ⛔ skip players in plot
+			local inPlot = target:FindFirstChild("InPlot")
+			if inPlot and inPlot.Value == true then
+				return
+			end
+
+			local RS = game:GetService("ReplicatedStorage")
+			local RunService = game:GetService("RunService")
+			local GE = RS:WaitForChild("GrabEvents")
+
+			local myChar = Player.Character
+			local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+			if not myRoot then return end
+
+			local tChar = target.Character
+			local tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")
+			local tHum = tChar and tChar:FindFirstChild("Humanoid")
+			if not (tRoot and tHum and tHum.Health > 0) then return end
+
+			local savedPos = myRoot.CFrame
+			local dragging = false
+			local grabStartTime = 0
+
+			local start = tick()
+			while tRoot.Parent
+				and tHum.Health > 0
+				and tick() - start < 0.9
+			do
+				-- reset target velocity
+				tRoot.AssemblyLinearVelocity = Vector3.zero
+				tRoot.AssemblyAngularVelocity = Vector3.zero
+				tRoot.Velocity = Vector3.zero
+
+				if not dragging then
+					-- snap to target to grab
+					myRoot.CFrame = tRoot.CFrame
+					myRoot.Velocity = Vector3.zero
+
+					pcall(function()
+						tHum.PlatformStand = true
+						tHum.Sit = true
+						GE.SetNetworkOwner:FireServer(
+							tRoot,
+							CFrame.new(myRoot.Position, tRoot.Position)
+						)
+						GE.CreateGrabLine:FireServer(
+							tRoot,
+							Vector3.zero,
+							tRoot.Position,
+							false
+						)
+					end)
+
+					if grabStartTime == 0 then
+						grabStartTime = tick()
+					end
+
+					if tick() - grabStartTime > 0.35 then
+						dragging = true
+						grabStartTime = 0
+					end
+				else
+					-- bring to you
+					myRoot.CFrame = savedPos
+					myRoot.Velocity = Vector3.zero
+
+					local lockPos = savedPos * CFrame.new(0, 17, 0)
+
+					tRoot.CFrame = lockPos
+					tRoot.Velocity = Vector3.zero
+					tRoot.RotVelocity = Vector3.zero
+
+					tHum.PlatformStand = true
+					tHum.Sit = false
+
+					pcall(function()
+						GE.SetNetworkOwner:FireServer(tRoot, lockPos)
+						GE.CreateGrabLine:FireServer(
+							tRoot,
+							Vector3.zero,
+							tRoot.Position,
+							false
+						)
+					end)
+				end
+
+				RunService.Heartbeat:Wait()
+			end
+
+			-- 🔓 RELEASE (same as toggle off)
+			pcall(function()
+				tHum.PlatformStand = false
+				tHum.Sit = false
+				GE.DestroyGrabLine:FireServer(tRoot)
+			end)
+
+			-- return you cleanly
+			if myRoot then
+				myRoot.CFrame = savedPos
+				myRoot.Velocity = Vector3.zero
+			end
+		end)
 	end
 })
 
