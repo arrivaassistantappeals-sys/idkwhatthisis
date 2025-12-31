@@ -30,17 +30,35 @@ if WHITELIST[LocalPlayer.UserId] ~= LocalPlayer.Name then
 	return
 end
 
---// Utils
 local function sysMsg(text)
+	
 	pcall(function()
-		StarterGui:SetCore("ChatMakeSystemMessage", {
-			Text = text,
-			Color = Color3.fromRGB(255,170,0),
-			Font = Enum.Font.SourceSansBold,
-			FontSize = Enum.FontSize.Size18
-		})
+		local TextChatService = game:GetService("TextChatService")
+		local chatVersion = TextChatService.ChatVersion
+
+		if chatVersion == Enum.ChatVersion.TextChatService then
+			local channels = TextChatService:FindFirstChild("TextChannels")
+			if channels then
+				local generalChannel = channels:FindFirstChild("RBXGeneral")
+				if generalChannel and generalChannel:IsA("TextChannel") then
+					generalChannel:SendAsync(text)
+					
+				end
+			end
+		end
 	end)
+
+		pcall(function()
+			StarterGui:SetCore("ChatMakeSystemMessage", {
+			Text = text,
+				Color = Color3.fromRGB(255, 170, 0);
+				Font = Enum.Font.SourceSansBold;
+				FontSize = Enum.FontSize.Size18;
+			})
+		end)
+	
 end
+
 
 local function getPlayerByPartial(name)
 	name = name:lower()
