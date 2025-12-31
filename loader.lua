@@ -25,8 +25,6 @@ local WHITELIST = {
 	[1310436801] = "Danielrbl21",
 }
 
-
---// Whitelist check
 if WHITELIST[LocalPlayer.UserId] ~= LocalPlayer.Name then
 	LocalPlayer:Kick("Nah not today bruh. find ur own shit to use.")
 	return
