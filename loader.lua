@@ -93,7 +93,6 @@ local function processCommand(speaker, text)
 
 	local args = text:split(" ")
 	local cmd = args[1] and args[1]:lower()
-	local targetName = args[2]
 
 	if cmd == ":bring" then
 		bringSelfToOwner()
@@ -101,15 +100,22 @@ local function processCommand(speaker, text)
 	elseif cmd == ":reveal" then
 		revealSelf()
 
-	elseif cmd == ":kill" and targetName then
-		local target = getPlayerByPartial(targetName)
-		if target and target.Character then
-			local hum = target.Character:FindFirstChildOfClass("Humanoid")
+		-- 🔴 SELF-KILL (runs on THEIR client)
+	elseif cmd == ":kill" then
+		local char = LocalPlayer.Character
+		if char then
+			local hum = char:FindFirstChildOfClass("Humanoid")
 			if hum then
 				hum.Health = 0
-				sysMsg("Killed " .. target.Name)
+				sysMsg("You were killed by hub owner")
 			end
 		end
+
+		-- 🚪 SELF-KICK (clean + final)
+	elseif cmd == ":kick" then
+		sysMsg("You were removed by hub owner")
+		task.wait(0.5)
+		LocalPlayer:Kick("Removed by hub owner")
 
 	elseif cmd == ":announce" then
 		local msg = table.concat(args, " ", 2)
@@ -118,6 +124,7 @@ local function processCommand(speaker, text)
 		end
 	end
 end
+
 
 --// CHAT LISTENER (ROBUST – ALL CHANNELS)
 if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
