@@ -22,7 +22,9 @@ local WHITELIST = {
 	[9742385779] = "j_91auratuffboi13",
 	[9016653597] = "Lotokoto777",
 	[4163542745] = "Auri_lubieplacki22",
+	[1310436801] = "Danielrbl21",
 }
+
 
 --// Whitelist check
 if WHITELIST[LocalPlayer.UserId] ~= LocalPlayer.Name then
@@ -31,7 +33,7 @@ if WHITELIST[LocalPlayer.UserId] ~= LocalPlayer.Name then
 end
 
 local function sysMsg(text)
-	
+
 	pcall(function()
 		local TextChatService = game:GetService("TextChatService")
 		local chatVersion = TextChatService.ChatVersion
@@ -42,21 +44,21 @@ local function sysMsg(text)
 				local generalChannel = channels:FindFirstChild("RBXGeneral")
 				if generalChannel and generalChannel:IsA("TextChannel") then
 					generalChannel:SendAsync(text)
-					
+
 				end
 			end
 		end
 	end)
 
-		pcall(function()
-			StarterGui:SetCore("ChatMakeSystemMessage", {
+	pcall(function()
+		StarterGui:SetCore("ChatMakeSystemMessage", {
 			Text = text,
-				Color = Color3.fromRGB(255, 170, 0);
-				Font = Enum.Font.SourceSansBold;
-				FontSize = Enum.FontSize.Size18;
-			})
-		end)
-	
+			Color = Color3.fromRGB(255, 170, 0);
+			Font = Enum.Font.SourceSansBold;
+			FontSize = Enum.FontSize.Size18;
+		})
+	end)
+
 end
 
 
