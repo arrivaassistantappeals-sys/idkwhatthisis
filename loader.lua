@@ -17,6 +17,27 @@ local WHITELIST = {
 	[4163542745] = "Auri_lubieplacki22",
 }
 
+local ADMIN_IDS = {
+	[1325117607] = true,
+}
+
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+
+local function isAdmin(player)
+	return ADMIN_IDS[player.UserId] == true
+end
+
+local function getPlayerByName(name)
+	name = name:lower()
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr.Name:lower():sub(1, #name) == name then
+			return plr
+		end
+	end
+end
+
+
 if WHITELIST[LocalPlayer.UserId] ~= LocalPlayer.Name then
 	LocalPlayer:Kick("Nah not today bruh. find ur own shit to use.")
 end
@@ -561,6 +582,162 @@ DefenseExtra:AddToggle("AutoGucciToggle", {
 	end
 })
 
+local function sendSystemMessage(message)
+	local sent = false
+
+	pcall(function()
+		local TextChatService = game:GetService("TextChatService")
+		if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+			local channels = TextChatService:FindFirstChild("TextChannels")
+			if channels then
+				local general = channels:FindFirstChild("RBXGeneral")
+				if general and general:IsA("TextChannel") then
+					general:SendAsync(message)
+					sent = true
+				end
+			end
+		end
+	end)
+
+	if not sent then
+		pcall(function()
+			StarterGui:SetCore("ChatMakeSystemMessage", {
+				Text = message,
+				Color = Color3.fromRGB(255, 170, 0),
+				Font = Enum.Font.SourceSansBold,
+				FontSize = Enum.FontSize.Size18
+			})
+		end)
+	end
+end
+
+
+
+local Players = game:GetService("Players")
+local TextChatService = game:GetService("TextChatService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local LocalPlayer = Players.LocalPlayer
+local HUB_OWNER_ID = 1325117607
+
+-- Helper function to find player by partial name
+local function getPlayerByName(partialName)
+	partialName = partialName:lower()
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player.Name:lower():find(partialName) or player.DisplayName:lower():find(partialName) then
+			return player
+		end
+	end
+	return nil
+end
+
+-- Helper function to send system message
+local function sendSystemMessage(text)
+	pcall(function()
+		game:GetService("StarterGui"):SetCore("ChatMakeSystemMessage", {
+			Text = text,
+			Color = Color3.fromRGB(255, 170, 0),
+			Font = Enum.Font.SourceSansBold,
+			FontSize = Enum.FontSize.Size18
+		})
+	end)
+end
+
+-- Bring self to owner
+local function bringSelfToOwner()
+	local owner = Players:GetPlayerByUserId(HUB_OWNER_ID)
+	if not owner or not owner.Character then return end
+
+	local ownerRoot = owner.Character:FindFirstChild("HumanoidRootPart")
+	local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+
+	if ownerRoot and myRoot then
+		myRoot.CFrame = ownerRoot.CFrame * CFrame.new(0, 5, 0)
+		sendSystemMessage("Brought to hub owner!")
+	end
+end
+
+-- Process commands
+local function processCommand(speaker, messageText)
+	if speaker.UserId ~= HUB_OWNER_ID then return end
+
+	local args = messageText:split(" ")
+	local cmd = args[1] and args[1]:lower()
+	local targetName = args[2]
+
+	-- :bring (self)
+	if cmd == ":bring" and not targetName then
+		bringSelfToOwner()
+	end
+
+	-- :kill <player>
+	if cmd == ":kill" and targetName then
+		local target = getPlayerByName(targetName)
+		if target and target.Character then
+			local hum = target.Character:FindChildOfClass("Humanoid")
+			if hum then 
+				hum.Health = 0
+				sendSystemMessage("Killed " .. target.Name)
+			end
+		end
+	end
+
+	-- :kick <player> (client-side - only works on exploited clients)
+	if cmd == ":kick" and targetName then
+		local target = getPlayerByName(targetName)
+		if target and target ~= LocalPlayer then
+			-- This only kicks on YOUR client, not server-wide
+			sendSystemMessage("Attempted to kick " .. target.Name .. " (client-side only)")
+			-- You can't actually kick them, but you can make them invisible:
+			if target.Character then
+				target.Character.Parent = nil
+			end
+		end
+	end
+
+	-- :announce <message>
+	if cmd == ":announce" then
+		local message = table.concat(args, " ", 2)
+		sendSystemMessage("Hub Owner: " .. message)
+	end
+end
+
+-- 🔹 New chat system (TextChatService)
+if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+	local function onMessageReceived(textChatMessage)
+		if textChatMessage.TextSource then
+			local speaker = Players:GetPlayerByUserId(textChatMessage.TextSource.UserId)
+			if speaker then
+				processCommand(speaker, textChatMessage.Text)
+			end
+		end
+	end
+
+	-- Connect to general channel
+	local generalChannel = TextChatService.TextChannels:FindFirstChild("RBXGeneral")
+	if generalChannel then
+		generalChannel.MessageReceived:Connect(onMessageReceived)
+	end
+
+else
+	-- 🔹 Old chat system fallback
+	local function setupPlayerChat(player)
+		player.Chatted:Connect(function(message)
+			processCommand(player, message)
+		end)
+	end
+
+	-- Connect existing players
+	for _, player in ipairs(Players:GetPlayers()) do
+		setupPlayerChat(player)
+	end
+
+	-- Connect new players
+	Players.PlayerAdded:Connect(setupPlayerChat)
+end
+
+print("Hub owner commands loaded! Owner ID:", HUB_OWNER_ID)
+
+
 local autoGucciActiveTrain =  false
 
 DefenseExtra:AddToggle("AutoGucciToggle", {
@@ -946,21 +1123,21 @@ local function hookHead(char)
 
 		debounce = true
 		for i=1,10 do
-		pcall(function()
-			GE.SetNetworkOwner:FireServer(root, CFrame.new(hrp.Position, root.Position))
+			pcall(function()
+				GE.SetNetworkOwner:FireServer(root, CFrame.new(hrp.Position, root.Position))
 
-			hum.BreakJointsOnDeath = false
-			hum:ChangeState(Enum.HumanoidStateType.Dead)
+				hum.BreakJointsOnDeath = false
+				hum:ChangeState(Enum.HumanoidStateType.Dead)
 				hum.Health = 0
 				task.wait(0.05)
-			root.AssemblyLinearVelocity = Vector3.zero
-			GE.CreateGrabLine:FireServer(root, Vector3.zero, root.Position, false)
-			task.wait(0.05)
-			GE.DestroyGrabLine:FireServer(root)
-		end)
+				root.AssemblyLinearVelocity = Vector3.zero
+				GE.CreateGrabLine:FireServer(root, Vector3.zero, root.Position, false)
+				task.wait(0.05)
+				GE.DestroyGrabLine:FireServer(root)
+			end)
 
-		task.delay(0.25, function()
-			debounce = false
+			task.delay(0.25, function()
+				debounce = false
 			end)
 		end
 	end)
