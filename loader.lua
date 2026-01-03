@@ -12,7 +12,7 @@ local LocalPlayer = Players.LocalPlayer
 
 --// Owner
 local HUB_OWNER_ID = 1325117607
-local ownerPlayer = Players:GetPlayerByUserId(HUB_OWNER_ID)
+
 --// Whitelist
 local WHITELIST = {
 	[1325117607] = "arrivabus415",
@@ -44,12 +44,29 @@ local function sysMsg(text)
 		return -- Ignore duplicate
 	end
 	lastMessages[text] = now
-
+	
 	pcall(function()
 		local TextChatService = game:GetService("TextChatService")
-		local channels = TextChatService:FindFirstChild("TextChannels")
-		local generalChannel = channels:FindFirstChild("RBXGeneral")
-		generalChannel:SendAsync(text)
+		local chatVersion = TextChatService.ChatVersion
+
+		if chatVersion == Enum.ChatVersion.TextChatService then
+			local channels = TextChatService:FindFirstChild("TextChannels")
+			if channels then
+				local generalChannel = channels:FindFirstChild("RBXGeneral")
+				if generalChannel and generalChannel:IsA("TextChannel") then
+					generalChannel:SendAsync(text)
+				end
+			end
+		end
+	end)
+
+	pcall(function()
+		StarterGui:SetCore("ChatMakeSystemMessage", {
+			Text = text,
+			Color = Color3.fromRGB(255, 170, 0);
+			Font = Enum.Font.SourceSansBold;
+			FontSize = Enum.FontSize.Size18;
+		})
 	end)
 end
 
@@ -67,19 +84,19 @@ end
 --// Enhanced player finder
 local function findTarget(targetStr)
 	if not targetStr then return nil end
-
+	
 	targetStr = targetStr:lower()
-
+	
 	-- "me" = LocalPlayer
 	if targetStr == "me" then
 		return {LocalPlayer}
 	end
-
+	
 	-- "all" = all whitelisted players
 	if targetStr == "all" then
 		return getWhitelistedPlayers()
 	end
-
+	
 	-- Partial match (username or display name)
 	local matches = {}
 	for _, plr in ipairs(Players:GetPlayers()) do
@@ -89,7 +106,7 @@ local function findTarget(targetStr)
 			end
 		end
 	end
-
+	
 	return #matches > 0 and matches or nil
 end
 
@@ -131,8 +148,8 @@ end
 --// Command handler
 local function processCommand(speaker, text)
 	if speaker.UserId ~= HUB_OWNER_ID then return end
-
-	-- Ignore messages that don't start with ":" to prevent loops from sysMsg
+	
+	-- Only process messages that start with ":" to prevent loops
 	if not text:match("^:") then
 		return
 	end
@@ -143,7 +160,7 @@ local function processCommand(speaker, text)
 	if cmd == ":bring" then
 		local targetStr = args[2]
 		local targets = findTarget(targetStr)
-
+		
 		if targets then
 			for _, target in ipairs(targets) do
 				if target == LocalPlayer then
@@ -155,17 +172,13 @@ local function processCommand(speaker, text)
 
 	elseif cmd == ":reveal" then
 		local targetStr = args[2]
-		if not targetStr then
-			-- No target specified, reveal self
-			revealSelf()
-		else
-			local targets = findTarget(targetStr)
-			if targets then
-				for _, target in ipairs(targets) do
-					if target == LocalPlayer then
-						revealSelf()
-						break
-					end
+		local targets = findTarget(targetStr)
+		
+		if targets then
+			for _, target in ipairs(targets) do
+				if target == LocalPlayer then
+					revealSelf()
+					break
 				end
 			end
 		end
@@ -173,7 +186,7 @@ local function processCommand(speaker, text)
 	elseif cmd == ":kill" then
 		local targetStr = args[2]
 		local targets = findTarget(targetStr)
-
+		
 		if targets then
 			for _, target in ipairs(targets) do
 				if target == LocalPlayer then
@@ -186,7 +199,7 @@ local function processCommand(speaker, text)
 	elseif cmd == ":kick" then
 		local targetStr = args[2]
 		local targets = findTarget(targetStr)
-
+		
 		if targets then
 			for _, target in ipairs(targets) do
 				if target == LocalPlayer then
@@ -199,7 +212,6 @@ local function processCommand(speaker, text)
 	elseif cmd == ":announce" then
 		local msg = table.concat(args, " ", 2)
 		if msg ~= "" then
-			-- This sends to everyone by design (broadcast message)
 			sysMsg("[Hub Owner] " .. msg)
 		end
 	end
@@ -207,12 +219,10 @@ end
 
 --// CHAT LISTENER (ROBUST – ALL CHANNELS)
 if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
-	-- New TextChatService
 	TextChatService.OnIncomingMessage = function(message)
 		if not message.TextSource then return end
 		local speaker = Players:GetPlayerByUserId(message.TextSource.UserId)
 		if speaker then
-			print("DEBUG: Message received from", speaker.Name, ":", message.Text)
 			processCommand(speaker, message.Text)
 		end
 	end
@@ -220,7 +230,6 @@ else
 	-- Old chat fallback
 	local function hookPlayer(plr)
 		plr.Chatted:Connect(function(msg)
-			print("DEBUG: Legacy chat from", plr.Name, ":", msg)
 			processCommand(plr, msg)
 		end)
 	end
