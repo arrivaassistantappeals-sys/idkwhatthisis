@@ -7,10 +7,10 @@ local Players = game:GetService("Players")
 local TextChatService = game:GetService("TextChatService")
 local StarterGui = game:GetService("StarterGui")
 
---// Local player
+--// Player
 local LocalPlayer = Players.LocalPlayer
 
---// Hub owner
+--// Owner
 local HUB_OWNER_ID = 1325117607
 
 --// Whitelist
@@ -33,48 +33,73 @@ if WHITELIST[LocalPlayer.UserId] ~= LocalPlayer.Name then
 	return
 end
 
---// System message (LOCAL ONLY)
 local function sysMsg(text)
+	pcall(function()
+		local TextChatService = game:GetService("TextChatService")
+		local chatVersion = TextChatService.ChatVersion
+
+		if chatVersion == Enum.ChatVersion.TextChatService then
+			local channels = TextChatService:FindFirstChild("TextChannels")
+			if channels then
+				local generalChannel = channels:FindFirstChild("RBXGeneral")
+				if generalChannel and generalChannel:IsA("TextChannel") then
+					generalChannel:SendAsync(text)
+				end
+			end
+		end
+	end)
+
 	pcall(function()
 		StarterGui:SetCore("ChatMakeSystemMessage", {
 			Text = text,
-			Color = Color3.fromRGB(255,170,0),
-			Font = Enum.Font.SourceSansBold,
-			FontSize = Enum.FontSize.Size18,
+			Color = Color3.fromRGB(255, 170, 0);
+			Font = Enum.Font.SourceSansBold;
+			FontSize = Enum.FontSize.Size18;
 		})
 	end)
 end
 
---// Universal target matcher
--- supports: me | all | partial username | display name | nil (defaults to me)
-local function isMeTarget(target)
-	if not target or target == "" then
-		return true
+--// Get all whitelisted players currently in-game
+local function getWhitelistedPlayers()
+	local whitelisted = {}
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if WHITELIST[plr.UserId] then
+			table.insert(whitelisted, plr)
+		end
 	end
-
-	target = target:lower()
-
-	if target == "me" then
-		return true
-	end
-
-	if target == "all" then
-		return true
-	end
-
-	if LocalPlayer.Name:lower():find(target) then
-		return true
-	end
-
-	if LocalPlayer.DisplayName
-		and LocalPlayer.DisplayName:lower():find(target) then
-		return true
-	end
-
-	return false
+	return whitelisted
 end
 
---// Actions (SELF only – executed on THIS client)
+--// Enhanced player finder
+local function findTarget(targetStr)
+	if not targetStr then return nil end
+	
+	targetStr = targetStr:lower()
+	
+	-- "me" = LocalPlayer
+	if targetStr == "me" then
+		return {LocalPlayer}
+	end
+	
+	-- "all" = all whitelisted players
+	if targetStr == "all" then
+		return getWhitelistedPlayers()
+	end
+	
+	-- Partial match (username or display name)
+	local matches = {}
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if WHITELIST[plr.UserId] then -- Only match whitelisted players
+			if plr.Name:lower():find(targetStr) or plr.DisplayName:lower():find(targetStr) then
+				table.insert(matches, plr)
+			end
+		end
+	end
+	
+	return #matches > 0 and matches or nil
+end
+
+--// Actions
 local function bringSelfToOwner()
 	local owner = Players:GetPlayerByUserId(HUB_OWNER_ID)
 	if not owner or not owner.Character then return end
@@ -92,48 +117,82 @@ local function revealSelf()
 	sysMsg("I'm using Arriva Core Hub V1.3!")
 end
 
---// Command handler (OWNER → SELF-FILTERED EXECUTION)
+local function killSelf()
+	local char = LocalPlayer.Character
+	if char then
+		local hum = char:FindFirstChildOfClass("Humanoid")
+		if hum then
+			hum.Health = 0
+			sysMsg("You were killed by hub owner")
+		end
+	end
+end
+
+local function kickSelf()
+	sysMsg("You were removed by hub owner")
+	task.wait(0.5)
+	LocalPlayer:Kick("Removed by hub owner")
+end
+
+--// Command handler
 local function processCommand(speaker, text)
 	if speaker.UserId ~= HUB_OWNER_ID then return end
 
 	local args = text:split(" ")
 	local cmd = args[1] and args[1]:lower()
-	local target = args[2] -- me | name | all
 
-	-- :bring [target]
 	if cmd == ":bring" then
-		if isMeTarget(target) then
-			bringSelfToOwner()
-		end
-
-	-- :reveal [target]
-	elseif cmd == ":reveal" then
-		if isMeTarget(target) then
-			revealSelf()
-		end
-
-	-- :kill [target]
-	elseif cmd == ":kill" then
-		if isMeTarget(target) then
-			local char = LocalPlayer.Character
-			if char then
-				local hum = char:FindFirstChildOfClass("Humanoid")
-				if hum then
-					hum.Health = 0
-					sysMsg("You were killed by hub owner")
+		local targetStr = args[2]
+		local targets = findTarget(targetStr)
+		
+		if targets then
+			for _, target in ipairs(targets) do
+				if target == LocalPlayer then
+					bringSelfToOwner()
+					break
 				end
 			end
 		end
 
-	-- :kick [target]
-	elseif cmd == ":kick" then
-		if isMeTarget(target) then
-			sysMsg("You were removed by hub owner")
-			task.wait(0.4)
-			LocalPlayer:Kick("Removed by hub owner")
+	elseif cmd == ":reveal" then
+		local targetStr = args[2]
+		local targets = findTarget(targetStr)
+		
+		if targets then
+			for _, target in ipairs(targets) do
+				if target == LocalPlayer then
+					revealSelf()
+					break
+				end
+			end
 		end
 
-	-- :announce <message>  (global, no targeting)
+	elseif cmd == ":kill" then
+		local targetStr = args[2]
+		local targets = findTarget(targetStr)
+		
+		if targets then
+			for _, target in ipairs(targets) do
+				if target == LocalPlayer then
+					killSelf()
+					break
+				end
+			end
+		end
+
+	elseif cmd == ":kick" then
+		local targetStr = args[2]
+		local targets = findTarget(targetStr)
+		
+		if targets then
+			for _, target in ipairs(targets) do
+				if target == LocalPlayer then
+					kickSelf()
+					break
+				end
+			end
+		end
+
 	elseif cmd == ":announce" then
 		local msg = table.concat(args, " ", 2)
 		if msg ~= "" then
@@ -142,7 +201,7 @@ local function processCommand(speaker, text)
 	end
 end
 
---// Chat listener (ALL channels, robust)
+--// CHAT LISTENER (ROBUST – ALL CHANNELS)
 if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
 	TextChatService.OnIncomingMessage = function(message)
 		if not message.TextSource then return end
