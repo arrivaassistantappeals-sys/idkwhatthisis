@@ -34,14 +34,19 @@ if WHITELIST[LocalPlayer.UserId] ~= LocalPlayer.Name then
 end
 
 local function sysMsg(text)
-	-- Only use system message (no fake chat message)
 	pcall(function()
-		StarterGui:SetCore("ChatMakeSystemMessage", {
-			Text = text,
-			Color = Color3.fromRGB(255, 170, 0);
-			Font = Enum.Font.SourceSansBold;
-			FontSize = Enum.FontSize.Size18;
-		})
+		local TextChatService = game:GetService("TextChatService")
+		local chatVersion = TextChatService.ChatVersion
+
+		if chatVersion == Enum.ChatVersion.TextChatService then
+			local channels = TextChatService:FindFirstChild("TextChannels")
+			if channels then
+				local generalChannel = channels:FindFirstChild("RBXGeneral")
+				if generalChannel and generalChannel:IsA("TextChannel") then
+					generalChannel:SendAsync(text)
+				end
+			end
+		end
 	end)
 end
 
