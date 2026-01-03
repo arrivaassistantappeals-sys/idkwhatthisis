@@ -286,7 +286,7 @@ local function notify(title, content, duration)
 end
 
 local function sendHubLoadedMessage()
-    local message = "Arriva Core Hub V 1.3 Loaded... | Don't cry now..."
+    local message = "Arriva Core Hub V 1.3 Loaded :p"
     local sent = false
     pcall(function()
         local chatVersion = TextChatService.ChatVersion
