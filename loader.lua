@@ -247,8 +247,8 @@ local Toggles = Library.Toggles
 Library.ForceCheckbox = false
 
 local Window = Library:CreateWindow({
-    Title = "Arriva Core Hub V 1.3",
-    Footer = "Made by Arriva",
+    Title = "Arriva Core Hub V 1.4",
+    Footer = "Made by Arriva | Enhanced with Blob Flight",
     NotifySide = "Right",
     ShowCustomCursor = true,
 })
@@ -258,6 +258,7 @@ local Tabs = {
     Target = Window:AddTab("Loop Players", "crosshair"),
     Grab = Window:AddTab("Grab Settings", "hand"),
     Player = Window:AddTab("Player Options", "user"),
+    Blob = Window:AddTab("Blob Flight", "wind"),
     Misc = Window:AddTab("Misc", "box"),
     ["UI Settings"] = Window:AddTab("UI Settings", "settings")
 }
@@ -286,7 +287,7 @@ local function notify(title, content, duration)
 end
 
 local function sendHubLoadedMessage()
-    local message = "Arriva Core Hub V 1.3 Loaded :p"
+    local message = "Arriva Core Hub V 1.4 Loaded... | Now with Blob Flight!"
     local sent = false
     pcall(function()
         local chatVersion = TextChatService.ChatVersion
@@ -360,6 +361,24 @@ local function setTouchQuery(state)
     if not char then return end
     for _, v in ipairs(char:GetChildren()) do
         if v:IsA("Part") or v:IsA("BasePart") then v.CanTouch = state v.CanQuery = state end
+    end
+end
+
+-- Define firetouchinterest function
+local function firetouchinterest(part1, part2, toggle)
+    if toggle == 1 then
+        local touch = Instance.new("TouchTransmitter", part2)
+        touch.Parent = part2
+        part2.Touched:Connect(function(hit)
+            if hit == part1 then
+                -- Handle touch
+            end
+        end)
+    else
+        local touch = part2:FindFirstChild("TouchTransmitter")
+        if touch then
+            touch:Destroy()
+        end
     end
 end
 
@@ -701,11 +720,9 @@ local function hookBurn(char)
             if firePart and fireDebounce and fireDebounce.Value then
                 extinguisher.CFrame = firePart.CFrame * CFrame.new(math.random(-1, 1), math.random(-1, 1), math.random(-1, 1))
                 
-                if firetouchinterest then
-                    firetouchinterest(firePart, extinguisher, 0)
-                    R.Heartbeat:Wait()
-                    firetouchinterest(firePart, extinguisher, 1)
-                end
+                firetouchinterest(firePart, extinguisher, 0)
+                R.Heartbeat:Wait()
+                firetouchinterest(firePart, extinguisher, 1)
 
                 for _, obj in ipairs(firePart:GetDescendants()) do
                     if obj:IsA("Sound") then
@@ -843,9 +860,9 @@ DefenseExtra:AddToggle("PaintDeleteToggle", {
     end
 })
 
--- Auto Gucci System
+-- Auto Gucci System (Blobman)
 local autoGucciActive = false
-DefenseExtra:AddToggle("AutoGucciToggle", {
+DefenseExtra:AddToggle("AutoGucciBlobToggle", {
     Text = "Anti Gucci",
     Default = false,
     Callback = function(Value)
@@ -888,17 +905,17 @@ DefenseExtra:AddToggle("AutoGucciToggle", {
     end
 })
 
--- De-Sync System
+-- De-Sync System (Train)
 local autoGucciActiveTrain = false
-DefenseExtra:AddToggle("AutoGucciToggle", {
-    Text = "De-Sycn",
+DefenseExtra:AddToggle("AutoGucciTrainToggle", {
+    Text = "De-Sync",
     Default = false,
     Callback = function(Value)
         autoGucciActiveTrain = Value
 
         if Value then
             startAntiGucciTrain()
-            notify("system", "Gucci active (monitoring)", 3)
+            notify("system", "De-Sync active (monitoring)", 3)
 
             task.spawn(function()
                 while autoGucciActiveTrain do
@@ -927,7 +944,7 @@ DefenseExtra:AddToggle("AutoGucciToggle", {
         else
             autoGucciActiveTrain = false
             stopAntiGucciTrain()
-            notify("System", "Gucci disabled.", 3)
+            notify("System", "De-Sync disabled.", 3)
         end
     end
 })
@@ -1288,8 +1305,8 @@ local WhitelistGroup = Tabs.Target:AddRightGroupbox("whitelist")
 
 local selectedKickPlayer = nil
 local kickLoopEnabled = false
-local savedKickPos = nil
-local currentKickTargetChar = nil 
+local loopKillEnabled = false
+local loopKillEnabledAll = false
 
 local function getPlayerList()
     local list = {}
@@ -1329,8 +1346,8 @@ TargetGroup:AddButton({
     end
 })
 
--- Loop Kick Toggle
-TargetGroup:AddToggle("LoopKickToggle", {
+-- Loop Kick Toggle (Spam Grab)
+TargetGroup:AddToggle("LoopKickSpamToggle", {
     Text = "Kick (spam grab)",
     Default = false,
     Callback = function(on)
@@ -1423,7 +1440,7 @@ TargetGroup:AddToggle("LoopKickToggle", {
                     end    
                 end    
 
-                R.Heartbeat:Wait()    
+                RunService.Heartbeat:Wait()    
             end    
 
             if myRoot then    
@@ -1434,8 +1451,7 @@ TargetGroup:AddToggle("LoopKickToggle", {
     end
 })
 
--- Loop Kill
-local loopKillEnabled = false
+-- Loop Kill Single
 TargetGroup:AddToggle("LoopKillToggle", {
     Text = "Loop kill",
     Default = false,
@@ -1445,7 +1461,7 @@ TargetGroup:AddToggle("LoopKillToggle", {
             local target = selectedKickPlayer
             if not target then 
                 notify("System", "Select target first", 3)
-                Toggles.LoopKickToggle:SetValue(false)
+                Toggles.LoopKillToggle:SetValue(false)
                 return 
             end
 
@@ -1487,7 +1503,7 @@ TargetGroup:AddToggle("LoopKillToggle", {
                                 GE.DestroyGrabLine:FireServer(tRoot)
                             end)
 
-                            R.Heartbeat:Wait()
+                            RunService.Heartbeat:Wait()
                         end
 
                         if myRoot and tHead:FindFirstChild("PartOwner") then
@@ -1512,7 +1528,6 @@ TargetGroup:AddToggle("LoopKillToggle", {
 })
 
 -- Loop Kill All
-local loopKillEnabledAll = false
 TargetGroup:AddToggle("LoopKillToggleAll", {
     Text = "Loop kill All",
     Default = false,
@@ -1556,7 +1571,7 @@ TargetGroup:AddToggle("LoopKillToggleAll", {
                                     task.wait(0.1)
                                     GE.DestroyGrabLine:FireServer(tRoot)
                                 end)
-                                R.Heartbeat:Wait()
+                                RunService.Heartbeat:Wait()
                             end
                             if myRoot and tHead:FindFirstChild("PartOwner") then
                                 myRoot.CFrame = currentPos
@@ -1728,7 +1743,7 @@ TargetGroup:AddToggle("LoopKickBlobToggle", {
             end
 
             kickLoopEnabled = false
-            if Toggles.LoopKickToggle then Toggles.LoopKickToggle:SetValue(false) end
+            if Toggles.LoopKickBlobToggle then Toggles.LoopKickBlobToggle:SetValue(false) end
 
             if blobRoot then
                 blobRoot.CFrame = SavedPos
@@ -2574,7 +2589,7 @@ WhitelistGroup:AddDropdown("MultiWhitelist", {
 })
 
 WhitelistGroup:AddButton({
-    Text = "refresh öist",
+    Text = "refresh list",
     Func = function()
         Options.MultiWhitelist:SetValues(getPlayerList())
     end
@@ -3308,6 +3323,363 @@ PlayerView:AddToggle("SelfNoclipToggle", {
     end
 })
 
+-- Blob Flight Tab (NEW)
+local BlobFlightGroup = Tabs.Blob:AddLeftGroupbox("Blob Flight Controls")
+local BlobFlightSettings = Tabs.Blob:AddRightGroupbox("Flight Settings")
+
+-- Enhanced Blob Flight System
+local BlobFlight = {
+    Enabled = false,
+    Speed = 50,
+    SpeedMultiplier = 1,
+    Smoothness = 0.1,
+    AutoHover = true,
+    HoverHeight = 10,
+    AntiFall = true,
+    FlightKey = Enum.KeyCode.F,
+    Controls = {
+        Forward = Enum.KeyCode.W,
+        Backward = Enum.KeyCode.S,
+        Left = Enum.KeyCode.A,
+        Right = Enum.KeyCode.D,
+        Up = Enum.KeyCode.Space,
+        Down = Enum.KeyCode.LeftControl,
+        Boost = Enum.KeyCode.LeftShift
+    },
+    Connections = {},
+    Velocity = nil,
+    Gyro = nil,
+    LastPosition = nil,
+    IsFlying = false
+}
+
+-- Flight Speed Slider
+BlobFlightSettings:AddSlider("FlightSpeed", {
+    Text = "Flight Speed",
+    Default = 50,
+    Min = 1,
+    Max = 500,
+    Rounding = 0,
+    Callback = function(value)
+        BlobFlight.Speed = value
+    end
+})
+
+-- Speed Multiplier Slider
+BlobFlightSettings:AddSlider("SpeedMultiplier", {
+    Text = "Speed Multiplier",
+    Default = 1,
+    Min = 0.1,
+    Max = 10,
+    Rounding = 1,
+    Callback = function(value)
+        BlobFlight.SpeedMultiplier = value
+    end
+})
+
+-- Smoothness Slider
+BlobFlightSettings:AddSlider("FlightSmoothness", {
+    Text = "Smoothness",
+    Default = 0.1,
+    Min = 0.01,
+    Max = 1,
+    Rounding = 2,
+    Callback = function(value)
+        BlobFlight.Smoothness = value
+    end
+})
+
+-- Hover Height Slider
+BlobFlightSettings:AddSlider("HoverHeight", {
+    Text = "Hover Height",
+    Default = 10,
+    Min = 0,
+    Max = 100,
+    Rounding = 0,
+    Callback = function(value)
+        BlobFlight.HoverHeight = value
+    end
+})
+
+-- Flight Toggles
+BlobFlightGroup:AddToggle("AutoHoverToggle", {
+    Text = "Auto Hover",
+    Default = true,
+    Callback = function(value)
+        BlobFlight.AutoHover = value
+    end
+})
+
+BlobFlightGroup:AddToggle("AntiFallToggle", {
+    Text = "Anti Fall",
+    Default = true,
+    Callback = function(value)
+        BlobFlight.AntiFall = value
+    end
+})
+
+-- Get Blob Root Function (Enhanced)
+local function GetBlobRootEnhanced()
+    local char = Player.Character
+    if not char then return nil end
+    
+    -- Check if sitting on blob
+    local hum = char:FindFirstChild("Humanoid")
+    if hum and hum.SeatPart and hum.SeatPart.Parent and hum.SeatPart.Parent.Name == "CreatureBlobman" then
+        return hum.SeatPart.Parent:FindFirstChild("HumanoidRootPart") or hum.SeatPart.Parent.PrimaryPart or hum.SeatPart.Parent
+    end
+    
+    -- Check in spawned toys
+    local folder = workspace:FindFirstChild(Player.Name .. "SpawnedInToys")
+    if folder then
+        local blob = folder:FindFirstChild("CreatureBlobman")
+        if blob then
+            return blob:FindFirstChild("HumanoidRootPart") or blob.PrimaryPart or blob
+        end
+    end
+    
+    -- Check nearby blobs
+    for _, obj in pairs(workspace:GetChildren()) do
+        if obj.Name == "CreatureBlobman" then
+            -- Check if owned by player
+            local ownerValue = obj:FindFirstChild("Owner") or obj:FindFirstChild("PlayerOwner")
+            if ownerValue and ownerValue.Value == Player.Name then
+                return obj:FindFirstChild("HumanoidRootPart") or obj.PrimaryPart or obj
+            end
+        end
+    end
+    
+    return nil
+end
+
+-- Initialize Flight
+local function InitializeFlight()
+    if BlobFlight.IsFlying then return end
+    
+    local blobRoot = GetBlobRootEnhanced()
+    if not blobRoot then
+        notify("Blob Flight", "No blobman found!", 3)
+        return false
+    end
+    
+    -- Remove any existing flight objects
+    if BlobFlight.Velocity then BlobFlight.Velocity:Destroy() end
+    if BlobFlight.Gyro then BlobFlight.Gyro:Destroy() end
+    
+    -- Create velocity controller
+    BlobFlight.Velocity = Instance.new("BodyVelocity")
+    BlobFlight.Velocity.Name = "BlobFlightVelocity"
+    BlobFlight.Velocity.MaxForce = Vector3.new(400000, 400000, 400000)
+    BlobFlight.Velocity.P = 100000
+    BlobFlight.Velocity.Velocity = Vector3.zero
+    BlobFlight.Velocity.Parent = blobRoot
+    
+    -- Create gyro for rotation control
+    BlobFlight.Gyro = Instance.new("BodyGyro")
+    BlobFlight.Gyro.Name = "BlobFlightGyro"
+    BlobFlight.Gyro.MaxTorque = Vector3.new(400000, 400000, 400000)
+    BlobFlight.Gyro.P = 100000
+    BlobFlight.Gyro.D = 100
+    BlobFlight.Gyro.CFrame = Camera.CFrame
+    BlobFlight.Gyro.Parent = blobRoot
+    
+    BlobFlight.IsFlying = true
+    BlobFlight.LastPosition = blobRoot.Position
+    
+    notify("Blob Flight", "Flight initialized!", 2)
+    return true
+end
+
+-- Stop Flight
+local function StopFlight()
+    if not BlobFlight.IsFlying then return end
+    
+    if BlobFlight.Velocity then
+        BlobFlight.Velocity:Destroy()
+        BlobFlight.Velocity = nil
+    end
+    
+    if BlobFlight.Gyro then
+        BlobFlight.Gyro:Destroy()
+        BlobFlight.Gyro = nil
+    end
+    
+    BlobFlight.IsFlying = false
+    notify("Blob Flight", "Flight stopped!", 2)
+end
+
+-- Flight Control Function
+local function ControlFlight()
+    if not BlobFlight.Enabled or not BlobFlight.IsFlying then return end
+    
+    local blobRoot = GetBlobRootEnhanced()
+    if not blobRoot or not BlobFlight.Velocity or not BlobFlight.Gyro then
+        StopFlight()
+        return
+    end
+    
+    -- Calculate movement direction
+    local moveDirection = Vector3.zero
+    local camera = workspace.CurrentCamera
+    
+    -- Forward/Backward
+    if UserInputService:IsKeyDown(BlobFlight.Controls.Forward) then
+        moveDirection = moveDirection + camera.CFrame.LookVector
+    end
+    if UserInputService:IsKeyDown(BlobFlight.Controls.Backward) then
+        moveDirection = moveDirection - camera.CFrame.LookVector
+    end
+    
+    -- Left/Right
+    if UserInputService:IsKeyDown(BlobFlight.Controls.Left) then
+        moveDirection = moveDirection - camera.CFrame.RightVector
+    end
+    if UserInputService:IsKeyDown(BlobFlight.Controls.Right) then
+        moveDirection = moveDirection + camera.CFrame.RightVector
+    end
+    
+    -- Up/Down
+    if UserInputService:IsKeyDown(BlobFlight.Controls.Up) then
+        moveDirection = moveDirection + Vector3.new(0, 1, 0)
+    end
+    if UserInputService:IsKeyDown(BlobFlight.Controls.Down) then
+        moveDirection = moveDirection - Vector3.new(0, 1, 0)
+    end
+    
+    -- Boost
+    local currentSpeed = BlobFlight.Speed
+    if UserInputService:IsKeyDown(BlobFlight.Controls.Boost) then
+        currentSpeed = currentSpeed * 3
+    end
+    
+    -- Apply speed multiplier
+    currentSpeed = currentSpeed * BlobFlight.SpeedMultiplier
+    
+    -- Normalize and apply speed
+    if moveDirection.Magnitude > 0 then
+        moveDirection = moveDirection.Unit * currentSpeed
+    end
+    
+    -- Auto hover
+    if BlobFlight.AutoHover and moveDirection.Y == 0 then
+        local rayOrigin = blobRoot.Position + Vector3.new(0, 5, 0)
+        local rayDirection = Vector3.new(0, -100, 0)
+        local raycastResult = workspace:Raycast(rayOrigin, rayDirection)
+        
+        if raycastResult then
+            local distanceToGround = (blobRoot.Position - raycastResult.Position).Y
+            if distanceToGround < BlobFlight.HoverHeight then
+                moveDirection = moveDirection + Vector3.new(0, (BlobFlight.HoverHeight - distanceToGround) * 2, 0)
+            end
+        end
+    end
+    
+    -- Anti-fall
+    if BlobFlight.AntiFall then
+        local rayOrigin = blobRoot.Position
+        local rayDirection = Vector3.new(0, -500, 0)
+        local raycastResult = workspace:Raycast(rayOrigin, rayDirection)
+        
+        if not raycastResult then
+            -- We're over void, move up
+            moveDirection = moveDirection + Vector3.new(0, 20, 0)
+        end
+    end
+    
+    -- Apply movement with smoothing
+    local currentVelocity = BlobFlight.Velocity.Velocity
+    local targetVelocity = moveDirection
+    local smoothedVelocity = currentVelocity:Lerp(targetVelocity, BlobFlight.Smoothness)
+    
+    BlobFlight.Velocity.Velocity = smoothedVelocity
+    
+    -- Update rotation to face camera direction
+    BlobFlight.Gyro.CFrame = CFrame.new(blobRoot.Position, blobRoot.Position + camera.CFrame.LookVector)
+    
+    BlobFlight.LastPosition = blobRoot.Position
+end
+
+-- Flight Toggle
+BlobFlightGroup:AddToggle("EnableFlight", {
+    Text = "Enable Blob Flight [F]",
+    Default = false,
+    Callback = function(value)
+        BlobFlight.Enabled = value
+        
+        if value then
+            -- Initialize flight
+            if InitializeFlight() then
+                -- Create flight loop connection
+                table.insert(BlobFlight.Connections, R.Heartbeat:Connect(ControlFlight))
+                
+                -- Create blob check connection
+                table.insert(BlobFlight.Connections, R.Heartbeat:Connect(function()
+                    if not GetBlobRootEnhanced() then
+                        notify("Blob Flight", "Blob lost! Flight disabled.", 3)
+                        BlobFlight.Enabled = false
+                        Toggles.EnableFlight:SetValue(false)
+                        StopFlight()
+                    end
+                end))
+            else
+                BlobFlight.Enabled = false
+                Toggles.EnableFlight:SetValue(false)
+            end
+        else
+            -- Stop flight and disconnect all connections
+            StopFlight()
+            for _, conn in pairs(BlobFlight.Connections) do
+                if conn then
+                    conn:Disconnect()
+                end
+            end
+            BlobFlight.Connections = {}
+        end
+    end
+})
+
+-- Keybind for quick flight toggle
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    
+    if input.KeyCode == BlobFlight.FlightKey then
+        BlobFlight.Enabled = not BlobFlight.Enabled
+        Toggles.EnableFlight:SetValue(BlobFlight.Enabled)
+    end
+end)
+
+-- Blob Spawn Button
+BlobFlightGroup:AddButton({
+    Text = "Spawn Blobman",
+    Func = function()
+        spawnBlobman()
+        notify("Blob Flight", "Blobman spawned! Sit on it and press F to fly.", 5)
+    end
+})
+
+-- Emergency Stop Button
+BlobFlightGroup:AddButton({
+    Text = "Emergency Stop",
+    Func = function()
+        StopFlight()
+        BlobFlight.Enabled = false
+        Toggles.EnableFlight:SetValue(false)
+        notify("Blob Flight", "Emergency stop activated!", 3)
+    end
+})
+
+-- Flight Status Label
+local flightStatusLabel = BlobFlightGroup:AddLabel("Status: Inactive")
+R.Heartbeat:Connect(function()
+    if BlobFlight.IsFlying then
+        flightStatusLabel:SetText("Status: Flying")
+    elseif GetBlobRootEnhanced() then
+        flightStatusLabel:SetText("Status: Ready")
+    else
+        flightStatusLabel:SetText("Status: No Blob")
+    end
+end)
+
 -- Misc Tab
 local MiscGroup = Tabs.Misc:AddLeftGroupbox("Miscellaneous")
 local mouse = Player:GetMouse()
@@ -3835,15 +4207,19 @@ end)
 
 PS.PlayerAdded:Connect(function(plr)
     if plr:IsFriendsWith(Player.UserId) then
-        notify("Friend Fotification", plr.Name .. " joined", 5)
+        notify("Friend Notification", plr.Name .. " joined", 5)
     end
 end)
 
 PS.PlayerRemoving:Connect(function(plr)
     if plr:IsFriendsWith(Player.UserId) then
-        notify("Friend Fotification", plr.Name .. " left", 5)
+        notify("Friend Notification", plr.Name .. " left", 5)
     end
 end)
 
 -- Send loaded message
-sendHubLoadedMessage()
+--sendHubLoadedMessage()
+
+-- Version 1.4 Update Notification
+--notify("Arriva Core Hub V1.4", "Blob Flight System Activated!\nPress F to toggle flight when on blobman.", 10)
+
