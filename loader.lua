@@ -7,140 +7,167 @@ local Players = game:GetService("Players")
 local TextChatService = game:GetService("TextChatService")
 local StarterGui = game:GetService("StarterGui")
 
---// Player
+--// Local player
 local LocalPlayer = Players.LocalPlayer
 
---// Owner
+--// Hub owner
 local HUB_OWNER_ID = 1325117607
 
 --// Whitelist
 local WHITELIST = {
-    [1325117607] = "arrivabus415",
-    [115211703] = "00FSwedish",
-    [9225934804] = "imagine2v1_L",
-    [9224990669] = "EZTCU4",
-    [9742385779] = "j_91auratuffboi13",
-    [9016653597] = "Lotokoto777",
-    [4163542745] = "Auri_lubieplacki22",
-    [1310436801] = "Danielrbl21",
-    [9668498177] = "ezzz_FO",
-    [1187171573] = "XxkubaxX1075",
+	[1325117607] = "arrivabus415",
+	[115211703] = "00FSwedish",
+	[9225934804] = "imagine2v1_L",
+	[9224990669] = "EZTCU4",
+	[9742385779] = "j_91auratuffboi13",
+	[9016653597] = "Lotokoto777",
+	[4163542745] = "Auri_lubieplacki22",
+	[1310436801] = "Danielrbl21",
+	[9668498177] = "ezzz_FO",
+	[1187171573] = "XxkubaxX1075",
 }
 
 --// Whitelist check
 if WHITELIST[LocalPlayer.UserId] ~= LocalPlayer.Name then
-    LocalPlayer:Kick("Nah not today bruh. find ur own shit to use.")
-    return
+	LocalPlayer:Kick("Nah not today bruh. find ur own shit to use.")
+	return
 end
 
+--// System message (LOCAL ONLY)
 local function sysMsg(text)
-    pcall(function()
-        local chatVersion = TextChatService.ChatVersion
-        if chatVersion == Enum.ChatVersion.TextChatService then
-            local channels = TextChatService:FindFirstChild("TextChannels")
-            if channels then
-                local generalChannel = channels:FindFirstChild("RBXGeneral")
-                if generalChannel and generalChannel:IsA("TextChannel") then
-                    generalChannel:SendAsync(text)
-                end
-            end
-        end
-    end)
-
-    pcall(function()
-        StarterGui:SetCore("ChatMakeSystemMessage", {
-            Text = text,
-            Color = Color3.fromRGB(255, 170, 0);
-            Font = Enum.Font.SourceSansBold;
-            FontSize = Enum.FontSize.Size18;
-        })
-    end)
+	pcall(function()
+		StarterGui:SetCore("ChatMakeSystemMessage", {
+			Text = text,
+			Color = Color3.fromRGB(255,170,0),
+			Font = Enum.Font.SourceSansBold,
+			FontSize = Enum.FontSize.Size18,
+		})
+	end)
 end
 
-local function getPlayerByPartial(name)
-    name = name:lower()
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr.Name:lower():find(name) or plr.DisplayName:lower():find(name) then
-            return plr
-        end
-    end
+--// Universal target matcher
+-- supports: me | all | partial username | display name | nil (defaults to me)
+local function isMeTarget(target)
+	if not target or target == "" then
+		return true
+	end
+
+	target = target:lower()
+
+	if target == "me" then
+		return true
+	end
+
+	if target == "all" then
+		return true
+	end
+
+	if LocalPlayer.Name:lower():find(target) then
+		return true
+	end
+
+	if LocalPlayer.DisplayName
+		and LocalPlayer.DisplayName:lower():find(target) then
+		return true
+	end
+
+	return false
 end
 
---// Actions (LOCAL ONLY – runs on THEIR client)
+--// Actions (SELF only – executed on THIS client)
 local function bringSelfToOwner()
-    local owner = Players:GetPlayerByUserId(HUB_OWNER_ID)
-    if not owner or not owner.Character then return end
+	local owner = Players:GetPlayerByUserId(HUB_OWNER_ID)
+	if not owner or not owner.Character then return end
 
-    local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-    local ownerRoot = owner.Character:FindFirstChild("HumanoidRootPart")
+	local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+	local ownerRoot = owner.Character:FindFirstChild("HumanoidRootPart")
 
-    if myRoot and ownerRoot then
-        myRoot.CFrame = ownerRoot.CFrame * CFrame.new(0,5,0)
-        sysMsg("Brought to hub owner")
-    end
+	if myRoot and ownerRoot then
+		myRoot.CFrame = ownerRoot.CFrame * CFrame.new(0, 5, 0)
+		sysMsg("Brought to hub owner")
+	end
 end
 
 local function revealSelf()
-    sysMsg("I'm using Arriva Core Hub V1.3!")
+	sysMsg("I'm using Arriva Core Hub V1.3!")
 end
 
---// Command handler
+--// Command handler (OWNER → SELF-FILTERED EXECUTION)
 local function processCommand(speaker, text)
-    if speaker.UserId ~= HUB_OWNER_ID then return end
+	if speaker.UserId ~= HUB_OWNER_ID then return end
 
-    local args = text:split(" ")
-    local cmd = args[1] and args[1]:lower()
+	local args = text:split(" ")
+	local cmd = args[1] and args[1]:lower()
+	local target = args[2] -- me | name | all
 
-    if cmd == ":bring" then
-        bringSelfToOwner()
-    elseif cmd == ":reveal" then
-        revealSelf()
-    elseif cmd == ":kill" then
-        local char = LocalPlayer.Character
-        if char then
-            local hum = char:FindFirstChildOfClass("Humanoid")
-            if hum then
-                hum.Health = 0
-                sysMsg("You were killed by hub owner")
-            end
-        end
-    elseif cmd == ":kick" then
-        sysMsg("You were removed by hub owner")
-        task.wait(0.5)
-        LocalPlayer:Kick("Removed by hub owner")
-    elseif cmd == ":announce" then
-        local msg = table.concat(args, " ", 2)
-        if msg ~= "" then
-            sysMsg("[Hub Owner] " .. msg)
-        end
-    end
+	-- :bring [target]
+	if cmd == ":bring" then
+		if isMeTarget(target) then
+			bringSelfToOwner()
+		end
+
+	-- :reveal [target]
+	elseif cmd == ":reveal" then
+		if isMeTarget(target) then
+			revealSelf()
+		end
+
+	-- :kill [target]
+	elseif cmd == ":kill" then
+		if isMeTarget(target) then
+			local char = LocalPlayer.Character
+			if char then
+				local hum = char:FindFirstChildOfClass("Humanoid")
+				if hum then
+					hum.Health = 0
+					sysMsg("You were killed by hub owner")
+				end
+			end
+		end
+
+	-- :kick [target]
+	elseif cmd == ":kick" then
+		if isMeTarget(target) then
+			sysMsg("You were removed by hub owner")
+			task.wait(0.4)
+			LocalPlayer:Kick("Removed by hub owner")
+		end
+
+	-- :announce <message>  (global, no targeting)
+	elseif cmd == ":announce" then
+		local msg = table.concat(args, " ", 2)
+		if msg ~= "" then
+			sysMsg("[Hub Owner] " .. msg)
+		end
+	end
 end
 
---// CHAT LISTENER (ROBUST – ALL CHANNELS)
+--// Chat listener (ALL channels, robust)
 if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
-    TextChatService.OnIncomingMessage = function(message)
-        if not message.TextSource then return end
-        local speaker = Players:GetPlayerByUserId(message.TextSource.UserId)
-        if speaker then
-            processCommand(speaker, message.Text)
-        end
-    end
+	TextChatService.OnIncomingMessage = function(message)
+		if not message.TextSource then return end
+		local speaker = Players:GetPlayerByUserId(message.TextSource.UserId)
+		if speaker then
+			processCommand(speaker, message.Text)
+		end
+	end
 else
-    -- Old chat fallback
-    local function hookPlayer(plr)
-        plr.Chatted:Connect(function(msg)
-            processCommand(plr, msg)
-        end)
-    end
+	-- Old chat fallback
+	local function hookPlayer(plr)
+		plr.Chatted:Connect(function(msg)
+			processCommand(plr, msg)
+		end)
+	end
 
-    for _, p in ipairs(Players:GetPlayers()) do
-        hookPlayer(p)
-    end
-    Players.PlayerAdded:Connect(hookPlayer)
+	for _, p in ipairs(Players:GetPlayers()) do
+		hookPlayer(p)
+	end
+	Players.PlayerAdded:Connect(hookPlayer)
 end
 
 print("Arriva Core Hub owner command core loaded")
 --=====================================================
+
 
 -- Main script continues
 loadstring(game:HttpGet('https://raw.githubusercontent.com/EdgeIY/infiniteyield/master/source'))()
