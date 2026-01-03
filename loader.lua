@@ -3374,6 +3374,8 @@ MiscGroup:AddToggle("WaterWalkToggle", {
 	end
 })
 
+
+
 -- Triggerbot System
 local Triggerbot = {
 	Enabled = false,
@@ -3827,6 +3829,8 @@ MiscGroup:AddLabel("Anchor Object Bind"):AddKeyPicker("AnchorObjectKey", {
 	end
 })
 
+
+
 -- UI Settings
 local MenuGroup = Tabs["UI Settings"]:AddLeftGroupbox("Menu")
 MenuGroup:AddButton("Unload", function() Library:Unload() end)
@@ -3840,12 +3844,20 @@ SaveManager:SetIgnoreIndexes({ "MenuKeybind" })
 ThemeManager:SetFolder("ArrivaCoreHub")
 SaveManager:SetFolder("ArrivaCoreHub/Configs")
 SaveManager:BuildConfigSection(Tabs["UI Settings"])
-SaveManager:LoadAutoloadConfig("ArrivaCoreHub/Configs/settings")
+SaveManager:Load("AutoSave")
 ThemeManager:ApplyToTab(Tabs["UI Settings"])
+notify("Config file loaded!","Your settings were loaded from the last autosave!"	)
+
+
 
 -- Player Events
 PS.PlayerRemoving:Connect(function(player)
 	notify("Leave Notification", (player and player.Name or "Unknown") .. " Left", 5)
+	if plr:IsFriendsWith(Player.UserId) then
+		notify("Friend Notification", player.Name .. " left", 5)
+	else
+		notify("Leave Notification", (player and player.Name or "Unknown") .. " Left", 5)
+	end
 end)
 
 PS.PlayerAdded:Connect(function(plr)
@@ -3854,11 +3866,18 @@ PS.PlayerAdded:Connect(function(plr)
 	end
 end)
 
-PS.PlayerRemoving:Connect(function(plr)
-	if plr:IsFriendsWith(Player.UserId) then
-		notify("Friend Notification", plr.Name .. " left", 5)
+
+task.spawn(function()
+	while true do
+		task.wait(60)
+			pcall(function()
+			SaveManager:Save("AutoSave")
+			notify("Config file saved!", "Your settings were saved automatically!")
+			end)
 	end
 end)
+
+
 
 -- Send loaded message
 --sendHubLoadedMessage()
