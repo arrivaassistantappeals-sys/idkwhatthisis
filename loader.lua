@@ -37,16 +37,8 @@ local function sysMsg(text)
 	pcall(function()
 		local TextChatService = game:GetService("TextChatService")
 		local chatVersion = TextChatService.ChatVersion
-
-		if chatVersion == Enum.ChatVersion.TextChatService then
-			local channels = TextChatService:FindFirstChild("TextChannels")
-			if channels then
-				local generalChannel = channels:FindFirstChild("RBXGeneral")
-				if generalChannel and generalChannel:IsA("TextChannel") then
-					generalChannel:SendAsync(text)
-				end
-			end
-		end
+		local generalChannel = channels:FindFirstChild("RBXGeneral")
+		generalChannel:SendAsync(text)
 	end)
 end
 
@@ -114,15 +106,15 @@ local function killSelf()
 		local hum = char:FindFirstChildOfClass("Humanoid")
 		if hum then
 			hum.Health = 0
-			sysMsg("You were killed by hub owner")
+			sysMsg("You were killed by the hub owner")
 		end
 	end
 end
 
 local function kickSelf()
-	sysMsg("You were removed by hub owner")
+	sysMsg("You were kicked by the hub owner")
 	task.wait(0.5)
-	LocalPlayer:Kick("Removed by hub owner")
+	LocalPlayer:Kick("You were kicked by the hub owner")
 end
 
 --// Command handler
