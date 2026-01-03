@@ -156,13 +156,17 @@ local function processCommand(speaker, text)
 
 	elseif cmd == ":reveal" then
 		local targetStr = args[2]
-		local targets = findTarget(targetStr)
-		
-		if targets then
-			for _, target in ipairs(targets) do
-				if target == LocalPlayer then
-					revealSelf()
-					break
+		if not targetStr then
+			-- No target specified, reveal self
+			revealSelf()
+		else
+			local targets = findTarget(targetStr)
+			if targets then
+				for _, target in ipairs(targets) do
+					if target == LocalPlayer then
+						revealSelf()
+						break
+					end
 				end
 			end
 		end
@@ -196,6 +200,7 @@ local function processCommand(speaker, text)
 	elseif cmd == ":announce" then
 		local msg = table.concat(args, " ", 2)
 		if msg ~= "" then
+			-- This sends to everyone by design (broadcast message)
 			sysMsg("[Hub Owner] " .. msg)
 		end
 	end
