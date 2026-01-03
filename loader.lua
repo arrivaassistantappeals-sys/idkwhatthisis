@@ -36,7 +36,7 @@ end
 local function sysMsg(text)
 	pcall(function()
 		local TextChatService = game:GetService("TextChatService")
-		local chatVersion = TextChatService.ChatVersion
+		local channels = TextChatService:FindFirstChild("TextChannels")
 		local generalChannel = channels:FindFirstChild("RBXGeneral")
 		generalChannel:SendAsync(text)
 	end)
