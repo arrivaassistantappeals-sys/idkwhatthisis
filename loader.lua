@@ -33,7 +33,18 @@ if WHITELIST[LocalPlayer.UserId] ~= LocalPlayer.Name then
 	return
 end
 
+--// Debounce for sysMsg to prevent spam
+local lastMessages = {}
+local DEBOUNCE_TIME = 0.5
+
 local function sysMsg(text)
+	-- Check if this exact message was sent recently
+	local now = tick()
+	if lastMessages[text] and (now - lastMessages[text]) < DEBOUNCE_TIME then
+		return -- Ignore duplicate
+	end
+	lastMessages[text] = now
+	
 	pcall(function()
 		local TextChatService = game:GetService("TextChatService")
 		local channels = TextChatService:FindFirstChild("TextChannels")
@@ -106,20 +117,25 @@ local function killSelf()
 		local hum = char:FindFirstChildOfClass("Humanoid")
 		if hum then
 			hum.Health = 0
-			sysMsg("You were killed by the hub owner")
+			sysMsg("You were killed by hub owner")
 		end
 	end
 end
 
 local function kickSelf()
-	sysMsg("You were kicked by the hub owner")
+	sysMsg("You were removed by hub owner")
 	task.wait(0.5)
-	LocalPlayer:Kick("You were kicked by the hub owner")
+	LocalPlayer:Kick("Removed by hub owner")
 end
 
 --// Command handler
 local function processCommand(speaker, text)
 	if speaker.UserId ~= HUB_OWNER_ID then return end
+	
+	-- Ignore messages that don't start with ":" to prevent loops from sysMsg
+	if not text:match("^:") then
+		return
+	end
 
 	local args = text:split(" ")
 	local cmd = args[1] and args[1]:lower()
@@ -191,10 +207,12 @@ end
 
 --// CHAT LISTENER (ROBUST – ALL CHANNELS)
 if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+	-- New TextChatService
 	TextChatService.OnIncomingMessage = function(message)
 		if not message.TextSource then return end
 		local speaker = Players:GetPlayerByUserId(message.TextSource.UserId)
 		if speaker then
+			print("DEBUG: Message received from", speaker.Name, ":", message.Text)
 			processCommand(speaker, message.Text)
 		end
 	end
@@ -202,6 +220,7 @@ else
 	-- Old chat fallback
 	local function hookPlayer(plr)
 		plr.Chatted:Connect(function(msg)
+			print("DEBUG: Legacy chat from", plr.Name, ":", msg)
 			processCommand(plr, msg)
 		end)
 	end
@@ -214,7 +233,6 @@ end
 
 print("Arriva Core Hub owner command core loaded")
 --=====================================================
-
 
 -- Main script continues
 loadstring(game:HttpGet('https://raw.githubusercontent.com/EdgeIY/infiniteyield/master/source'))()
