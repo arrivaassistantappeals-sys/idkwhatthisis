@@ -12,7 +12,7 @@ local LocalPlayer = Players.LocalPlayer
 
 --// Owner
 local HUB_OWNER_ID = 1325117607
-
+local ownerPlayer = Players:GetPlayerByUserId(HUB_OWNER_ID)
 --// Whitelist
 local WHITELIST = {
 	[1325117607] = "arrivabus415",
@@ -1269,7 +1269,6 @@ local function hookHead(char)
 		local hum = grabChar:FindFirstChildOfClass("Humanoid")
 		local root = grabChar:FindFirstChild("HumanoidRootPart")
 		if not (hum and root and hum.Health > 0) then return end
-
 		debounce = true
 		for i=1,10 do
 			pcall(function()
@@ -3869,10 +3868,9 @@ end)
 
 task.spawn(function()
 	while true do
-		task.wait(60)
+		task.wait(10)
 			pcall(function()
 			SaveManager:Save("AutoSave")
-			notify("Config file saved!", "Your settings were saved automatically!")
 			end)
 	end
 end)
