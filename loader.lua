@@ -2331,14 +2331,11 @@ TargetGroup:AddToggle("LoopKickToggle", {
 	end
 })
 
-
-
--- Dual Hand Loop Kick
 local loopKickDualActive = false
 TargetGroup:AddToggle("DualHandLoopKick", {
-	Text = "Loop Kick (blob)",
+	Text = "Loop Kick",
 	Default = false,
-		Callback = function(on)
+	Callback = function(on)
 		SaveManager:Save("AutoSave")
 		loopKickDualActive = on
 		if on then
@@ -2424,6 +2421,8 @@ TargetGroup:AddToggle("DualHandLoopKick", {
 		end
 	end
 })
+
+
 
 -- Player Fling
 local playerFlingActive = false
@@ -4207,7 +4206,7 @@ notify("Config file loaded!","Your settings were loaded from the last autosave!"
 -- Player Events
 PS.PlayerRemoving:Connect(function(player)
 	notify("Leave Notification", (player and player.Name or "Unknown") .. " Left", 5)
-	if plr:IsFriendsWith(Player.UserId) then
+	if player:IsFriendsWith(Player.UserId) then
 		notify("Friend Notification", player.Name .. " left", 5)
 	else
 		notify("Leave Notification", (player and player.Name or "Unknown") .. " Left", 5)
