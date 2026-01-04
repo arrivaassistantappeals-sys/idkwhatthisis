@@ -294,7 +294,8 @@ local setNetworkOwnerEvent = RS:WaitForChild("GrabEvents"):WaitForChild("SetNetw
 local extendGrabLineRemoteEvent = RS:WaitForChild("GrabEvents"):WaitForChild("ExtendGrabLine")
 local ragdollRemoteEvent = characterEventsFolder:WaitForChild("RagdollRemote")
 local playerScriptsFolder = LocalPlayer:WaitForChild("PlayerScripts")
-anticreatelinelocalscript = playerScriptsFolder:WaitForChild("CharacterAndBeamMove")
+local anticreatelinelocalscript = playerScriptsFolder:WaitForChild("CharacterAndBeamMove")
+local spawnedInToysFolder = Workspace:WaitForChild(LocalPlayer.Name .. "SpawnedInToys")
 -- Helper Functions
 local function notify(title, content, duration)
 	Library:Notify({
@@ -1902,6 +1903,50 @@ local function getPlayerFromSelection(selection)
 	return nil
 end
 
+local function autoblob()
+	local plr = game.Players.LocalPlayer
+	local char = plr.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	local hum = char and char:FindFirstChild("Humanoid")
+
+	if not hrp or not hum then return end
+
+	local folderName = plr.Name .. "SpawnedInToys"
+	local folder = workspace:FindFirstChild(folderName)
+	local blob = folder and folder:FindFirstChild("CreatureBlobman")
+
+	if not blob then
+		task.spawn(function()
+			pcall(function()
+				game.ReplicatedStorage.MenuToys.SpawnToyRemoteFunction:InvokeServer("CreatureBlobman", hrp.CFrame, Vector3.zero)
+			end)
+		end)
+
+		if not folder then
+			folder = workspace:WaitForChild(folderName, 5)
+		end
+
+		if folder then
+			blob = folder:WaitForChild("CreatureBlobman", 5)
+		end
+	end
+
+	if blob then
+		local seat = blob:WaitForChild("VehicleSeat", 5)
+		if seat then
+			local t = tick()
+			repeat
+				if not hum.SeatPart then
+					hrp.CFrame = seat.CFrame + Vector3.new(0, 1, 0)
+					hrp.Velocity = Vector3.zero
+					seat:Sit(hum)
+				end
+				R.Heartbeat:Wait()
+			until hum.SeatPart == seat or tick() - t > 1.5
+		end
+	end
+end
+
 TargetGroup:AddDropdown("KickPlayerDropdown", {
 	Values = getPlayerList(),
 	Default = 1,
@@ -2230,6 +2275,13 @@ TargetGroup:AddToggle("LoopKickToggle", {
 			kickLoopEnabled = false 
 			return 
 		end
+		
+		if spawnedInToysFolder:FindFirstChild("CreatureBlob") then
+			notify("No blob found!","Spawning blob!")
+		else
+			autoblob()
+		end
+		
 		task.spawn(function()
 			local RS = game:GetService("ReplicatedStorage")
 			local GE = RS:WaitForChild("GrabEvents")
@@ -2344,7 +2396,11 @@ TargetGroup:AddToggle("DualHandLoopKick", {
 				Toggles.DualHandLoopKick:SetValue(false)
 				return 
 			end
-
+			if spawnedInToysFolder:FindFirstChild("CreatureBlob") then
+				notify("No blob found!","Spawning blob!")
+			else
+				autoblob()
+			end
 			task.spawn(function()
 				local lastTargetCharDual = nil
 				local bp = nil
@@ -2806,6 +2862,13 @@ TargetGroup:AddButton({
 		local char = Player.Character
 		local hum = char and char:FindFirstChild("Humanoid")
 		local seat = hum and hum.SeatPart
+		
+		if spawnedInToysFolder:FindFirstChild("CreatureBlob") then
+			notify("No blob found!","Spawning blob!")
+		else
+			autoblob()
+		end
+		
 		if not seat or seat.Parent.Name ~= "CreatureBlobman" then return end
 
 		local blob = seat.Parent
@@ -4232,4 +4295,4 @@ end)
 
 
 -- Send loaded message
---sendHubLoadedMessage() a
+--sendHubLoadedMessage()
