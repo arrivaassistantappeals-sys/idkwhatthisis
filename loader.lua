@@ -280,6 +280,7 @@ local PS = game:GetService("Players")
 local RS = game:GetService("ReplicatedStorage")
 local R = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
+local Debris = game:GetService("Debris")
 local Workspace = workspace
 local Player = PS.LocalPlayer
 local Camera = Workspace.CurrentCamera
@@ -3273,6 +3274,89 @@ WhitelistGroup:AddToggle("JoinedNotifyBtn", {
 		end
 	end
 })
+
+local respawnNotifyActive = false
+local respawnConnections = {}
+
+local function isTrackedPlayer(player)
+	local whitelistTable = Options.MultiWhitelist.Value
+
+	-- Whitelist check
+	for nameString, isSelected in pairs(whitelistTable) do
+		if isSelected then
+			local actualName = nameString:match("%((.-)%)")
+			if actualName == player.Name then
+				return true, "[Whitelist]"
+			end
+		end
+	end
+
+	-- Main target check
+	if Options.KickPlayerDropdown and Options.KickPlayerDropdown.Value then
+		local selectedName = Options.KickPlayerDropdown.Value:match("%((.-)%)")
+		if selectedName == player.Name then
+			return true, "[Main Target]"
+		end
+	end
+
+	return false, nil
+end
+
+local function trackRespawn(player)
+	if respawnConnections[player] then return end
+
+	respawnConnections[player] = player.CharacterAdded:Connect(function()
+		if not respawnNotifyActive then return end
+
+		local tracked, reason = isTrackedPlayer(player)
+		if not tracked then return end
+
+		notify("Target Respawned! " .. reason .. " | Player: " .. player.Name, 8)
+		SelectedPlayer = player
+
+		local sound = Instance.new("Sound")
+		sound.SoundId = "rbxassetid://4590662766"
+		sound.Volume = 2
+		sound.Parent = workspace
+		sound:Play()
+		Debris:AddItem(sound, 3)
+	end)
+end
+
+WhitelistGroup:AddToggle("RespawnNotifyBtn", {
+	Text = "Target Respawn Notify",
+	Default = false,
+	Callback = function(on)
+		SaveManager:Save("AutoSave")
+		respawnNotifyActive = on
+
+		if on then
+			notify("Radar", "Tracking target respawns…", 3)
+
+			-- Hook all current players
+			for _, plr in ipairs(Players:GetPlayers()) do
+				if plr ~= LocalPlayer then
+					trackRespawn(plr)
+				end
+			end
+
+			-- Hook new players too
+			respawnConnections["_PlayerAdded"] = Players.PlayerAdded:Connect(function(plr)
+				trackRespawn(plr)
+			end)
+		else
+			-- Cleanup
+			for _, conn in pairs(respawnConnections) do
+				pcall(function()
+					conn:Disconnect()
+				end)
+			end
+			respawnConnections = {}
+			notify("Radar", "Respawn tracking disabled", 2)
+		end
+	end
+})
+
 
 local AuraGroup = Tabs.Aura:AddLeftGroupbox("Auras")
 
