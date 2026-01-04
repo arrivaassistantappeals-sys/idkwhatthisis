@@ -125,7 +125,7 @@ local function bringSelfToOwner()
 end
 
 local function revealSelf()
-	sysMsg("I'm using Arriva Core Hub V1.3!")
+	sysMsg("I'm using Arriva Core Hub V1.4!")
 end
 
 local function killSelf()
@@ -256,7 +256,7 @@ local Toggles = Library.Toggles
 Library.ForceCheckbox = false
 
 local Window = Library:CreateWindow({
-	Title = "Arriva Core Hub V 1.3",
+	Title = "Arriva Core Hub V1.4",
 	Footer = "Made by Arriva",
 	NotifySide = "Right",
 	ShowCustomCursor = true,
@@ -269,7 +269,8 @@ local Tabs = {
 	Grab = Window:AddTab("Grab Settings", "hand"),
 	Player = Window:AddTab("Player Options", "user"),
 	Misc = Window:AddTab("Misc", "box"),
-	["UI Settings"] = Window:AddTab("UI Settings", "settings")
+	["UI Settings"] = Window:AddTab("UI Settings", "settings"),
+	Changelog = Window:AddTab("Changelog", "clipboard-pen-line")
 }
 
 -- Services
@@ -291,6 +292,8 @@ local destroyGrabLineEvent = RS:WaitForChild("GrabEvents"):WaitForChild("Destroy
 local setNetworkOwnerEvent = RS:WaitForChild("GrabEvents"):WaitForChild("SetNetworkOwner")
 local extendGrabLineRemoteEvent = RS:WaitForChild("GrabEvents"):WaitForChild("ExtendGrabLine")
 local ragdollRemoteEvent = characterEventsFolder:WaitForChild("RagdollRemote")
+local playerScriptsFolder = LocalPlayer:WaitForChild("PlayerScripts")
+anticreatelinelocalscript = playerScriptsFolder:WaitForChild("CharacterAndBeamMove")
 -- Helper Functions
 local function notify(title, content, duration)
 	Library:Notify({
@@ -301,7 +304,7 @@ local function notify(title, content, duration)
 end
 
 local function sendHubLoadedMessage()
-	local message = "Arriva Core Hub V 1.3 Loaded..."
+	local message = "Arriva Core Hub V1.4 Loaded..."
 	local sent = false
 	pcall(function()
 		local chatVersion = TextChatService.ChatVersion
@@ -903,46 +906,36 @@ DefenseGroup:AddToggle("AntiStickyToggle", {
 	end,
 })
 
--- Anti-Lag
-local createGrabLineCopy, extendGrabLineCopy
-local grabFolder = ReplicatedStorage:FindFirstChild("GrabEvents")
-if grabFolder then
-	local originalCreate = grabFolder:FindFirstChild("CreateGrabLine")
-	local originalExtend = grabFolder:FindFirstChild("ExtendGrabLine")
-	if originalCreate then createGrabLineCopy = originalCreate:Clone() end
-	if originalExtend then extendGrabLineCopy = originalExtend:Clone() end
+
+local function isFromLocalPlayer(inst)
+	return LocalPlayer.Character and inst:IsDescendantOf(LocalPlayer.Character)
+end
+
+local function removeExistingLines()
+	for _, v in ipairs(workspace:GetDescendants()) do
+		if v:IsA("Beam") or v.Name:lower():find("line") then
+			if not isFromLocalPlayer(v) then
+				pcall(function()
+					v:Destroy()
+				end)
+			end
+		end
+	end
 end
 
 DefenseGroup:AddToggle("AntiLagToggle", {
 	Text = "Anti Lag",
 	Default = false,
 	Callback = function(Value)
+		anticreatelinelocalscript.Disabled = Value
+
 		if Value then
-			local grabFolder = ReplicatedStorage:FindFirstChild("GrabEvents")
-			if grabFolder then
-				local create = grabFolder:FindFirstChild("CreateGrabLine")
-				local extend = grabFolder:FindFirstChild("ExtendGrabLine")
-				if create and create:IsA("RemoteEvent") then create:Destroy() end
-				if extend and extend:IsA("RemoteEvent") then extend:Destroy() end
-			end
-			for _, v in ipairs(workspace:GetDescendants()) do
-				if v:IsA("Beam") or v.Name:lower():find("line") then v:Destroy() end
-			end
-		else
-			local grabFolder = ReplicatedStorage:FindFirstChild("GrabEvents")
-			if grabFolder then
-				if createGrabLineCopy and not grabFolder:FindFirstChild("CreateGrabLine") then
-					local restoredCreate = createGrabLineCopy:Clone()
-					restoredCreate.Parent = grabFolder
-				end
-				if extendGrabLineCopy and not grabFolder:FindFirstChild("ExtendGrabLine") then
-					local restoredExtend = extendGrabLineCopy:Clone()
-					restoredExtend.Parent = grabFolder
-				end
-			end
+			removeExistingLines()
 		end
 	end,
 })
+
+
 
 -- Extra Defense Toggles
 DefenseExtra:AddToggle("PaintDeleteToggle", {
@@ -4116,6 +4109,22 @@ MiscGroup:AddLabel("Anchor Object Bind"):AddKeyPicker("AnchorObjectKey", {
 			end
 		end)
 	end
+})
+
+local ChangelogGroup = Tabs.Changelog:AddLeftGroupbox("Change Log")
+
+ChangelogGroup:AddLabel("Changelog", {
+	Text = [[Arriva Core Hub V1.4
+
+• New Loop Kill system
+• Fixed defenses not working correctly
+• Fixed grab not working after respawn when Anti-Lag is enabled
+• Added Auras tab + Death Aura
+• Fixed inconsistent player WalkSpeed & JumpPower
+• Fixed Block Loop Kick
+• Plus multiple minor fixes & stability improvements
+]],
+	DoesWrap = true,
 })
 
 
