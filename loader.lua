@@ -32,6 +32,7 @@ local WHITELIST = {
 	[9668498177] = "ezzz_FO",
 	[1187171573] = "XxkubaxX1075",
 	[3892170520] = "VulgoMenta",
+	[10081518368] = "ThriIl3Rz",
 }
 
 --// Whitelist check
