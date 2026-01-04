@@ -6,10 +6,16 @@
 local Players = game:GetService("Players")
 local TextChatService = game:GetService("TextChatService")
 local StarterGui = game:GetService("StarterGui")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Debris = game:GetService("Debris")
+local Workspace = workspace
 
 --// Player
 local LocalPlayer = Players.LocalPlayer
 local character = LocalPlayer.Character
+
 --// Owner
 local HUB_OWNER_ID = 1325117607
 
@@ -46,7 +52,6 @@ local function sysMsg(text)
 	lastMessages[text] = now
 
 	pcall(function()
-		local TextChatService = game:GetService("TextChatService")
 		local chatVersion = TextChatService.ChatVersion
 
 		if chatVersion == Enum.ChatVersion.TextChatService then
@@ -273,29 +278,23 @@ local Tabs = {
 	Info = Window:AddTab("Information", "clipboard-pen-line")
 }
 
--- Services
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local StarterGui = game:GetService("StarterGui")
-local PS = game:GetService("Players")
-local RS = game:GetService("ReplicatedStorage")
-local R = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-local Debris = game:GetService("Debris")
-local Workspace = workspace
-local Player = PS.LocalPlayer
+--// Core Variables
+local Player = LocalPlayer -- Consistent naming
 local Camera = Workspace.CurrentCamera
-local CE = RS:WaitForChild("CharacterEvents", 10)
+local CE = ReplicatedStorage:WaitForChild("CharacterEvents", 10)
 local BeingHeld = Player:WaitForChild("IsHeld", 10)
 local StruggleEvent = CE and CE:WaitForChild("Struggle")
-local characterEventsFolder = RS:WaitForChild("CharacterEvents")
-local createGrabLineEvent = RS:WaitForChild("GrabEvents"):WaitForChild("CreateGrabLine")
-local destroyGrabLineEvent = RS:WaitForChild("GrabEvents"):WaitForChild("DestroyGrabLine")
-local setNetworkOwnerEvent = RS:WaitForChild("GrabEvents"):WaitForChild("SetNetworkOwner")
-local extendGrabLineRemoteEvent = RS:WaitForChild("GrabEvents"):WaitForChild("ExtendGrabLine")
+local characterEventsFolder = ReplicatedStorage:WaitForChild("CharacterEvents")
+local grabEventsFolder = ReplicatedStorage:WaitForChild("GrabEvents")
+local createGrabLineEvent = grabEventsFolder:WaitForChild("CreateGrabLine")
+local destroyGrabLineEvent = grabEventsFolder:WaitForChild("DestroyGrabLine")
+local setNetworkOwnerEvent = grabEventsFolder:WaitForChild("SetNetworkOwner")
+local extendGrabLineRemoteEvent = grabEventsFolder:WaitForChild("ExtendGrabLine")
 local ragdollRemoteEvent = characterEventsFolder:WaitForChild("RagdollRemote")
-local playerScriptsFolder = LocalPlayer:WaitForChild("PlayerScripts")
+local playerScriptsFolder = Player:WaitForChild("PlayerScripts")
 local anticreatelinelocalscript = playerScriptsFolder:WaitForChild("CharacterAndBeamMove")
-local spawnedInToysFolder = Workspace:WaitForChild(LocalPlayer.Name .. "SpawnedInToys")
+local spawnedInToysFolder = Workspace:WaitForChild(Player.Name .. "SpawnedInToys")
+
 -- Helper Functions
 local function notify(title, content, duration)
 	Library:Notify({
@@ -383,8 +382,6 @@ local function setTouchQuery(state)
 	end
 end
 
-
-
 -- Anti-Gucci Systems
 local antiGucciConnection
 local safePosition
@@ -431,7 +428,7 @@ local function startAntiGucci()
 	end)
 
 	if antiGucciConnection then antiGucciConnection:Disconnect() end
-	antiGucciConnection = R.Heartbeat:Connect(function()
+	antiGucciConnection = RunService.Heartbeat:Connect(function()
 		if not rootPart or not humanoid then return end
 		ReplicatedStorage.CharacterEvents.RagdollRemote:FireServer(rootPart, 0)
 		if restoreFrames > 0 then 
@@ -496,7 +493,7 @@ local function startAntiGucciTrain()
 	end)
 
 	if antiGucciConnectionTrain then antiGucciConnectionTrain:Disconnect() end
-	antiGucciConnectionTrain = R.Heartbeat:Connect(function()
+	antiGucciConnectionTrain = RunService.Heartbeat:Connect(function()
 		if not rootPart or not humanoid then return end
 		ReplicatedStorage.CharacterEvents.RagdollRemote:FireServer(rootPart, 0)
 		if restoreFramesTrain > 0 then 
@@ -524,13 +521,6 @@ end
 -- Defense Tab
 local DefenseGroup = Tabs.Defense:AddLeftGroupbox("Defense Main")
 local DefenseExtra = Tabs.Defense:AddRightGroupbox("Extra Defense")
-
--- Services
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-
-local Player = Players.LocalPlayer
 
 -- Remotes
 local CharacterEvents = ReplicatedStorage:FindFirstChild("CharacterEvents")
@@ -678,7 +668,7 @@ end
 DefenseGroup:AddToggle("AntiGrabObsidian", {
 	Text = "Anti Grab",
 	Default = false,
-		Callback = function(on)
+	Callback = function(on)
 		SaveManager:Save("AutoSave")
 		SaveManager:Save("AutoSave")
 		antiGrabEnabled = on
@@ -717,7 +707,7 @@ local antiBlob1T=false
 local function antiBlob1F()
 	antiBlob1T=true
 
-	if antiBlob1F then
+	if antiBlob1T then
 		for _, Descendant in pairs(workspace:GetDescendants()) do
 			if Descendant.Name == "CreatureBlobman" and Descendant.Parent ~= spawnedInToysFolder then
 				anti(Descendant)
@@ -771,8 +761,6 @@ DefenseGroup:AddToggle("AntiExplosionToggle", {
 })
 
 -- Anti-Burn System (FINAL / PERSISTENT)
-
-
 local extinguisher = workspace.Map.Hole.PoisonBigHole.ExtinguishPart
 extinguisher.Size = Vector3.new(0.5, 0.5, 0.5)
 extinguisher.Transparency = 1
@@ -840,7 +828,7 @@ local function hookBurn(char)
 end
 
 -- Respawn support
-LocalPlayer.CharacterAdded:Connect(function(char)
+Player.CharacterAdded:Connect(function(char)
 	if antiBurnEnabled then
 		task.wait(0.1)
 		hookBurn(char)
@@ -851,13 +839,13 @@ end)
 DefenseGroup:AddToggle("AntiBurnToggle", {
 	Text = "Anti Burn",
 	Default = false,
-		Callback = function(on)
+	Callback = function(on)
 		SaveManager:Save("AutoSave")
 		SaveManager:Save("AutoSave")
 		antiBurnEnabled = on
 		if on then
-			if LocalPlayer.Character then
-				hookBurn(LocalPlayer.Character)
+			if Player.Character then
+				hookBurn(Player.Character)
 			end
 		else
 			-- invalidate running threads
@@ -874,11 +862,11 @@ local SAFE_HEIGHT = 100
 DefenseGroup:AddToggle("AntiVoidToggle", {
 	Text = "Anti Void",
 	Default = false,
-		Callback = function(on)
+	Callback = function(on)
 		SaveManager:Save("AutoSave")
 		if on then
 			if antiVoidConn then antiVoidConn:Disconnect() end
-			antiVoidConn = R.Heartbeat:Connect(function()
+			antiVoidConn = RunService.Heartbeat:Connect(function()
 				local char = Player.Character
 				if char and char.PrimaryPart then
 					local pos = char.PrimaryPart.Position
@@ -910,7 +898,7 @@ DefenseGroup:AddToggle("AntiStickyToggle", {
 
 
 local function isFromLocalPlayer(inst)
-	return LocalPlayer.Character and inst:IsDescendantOf(LocalPlayer.Character)
+	return Player.Character and inst:IsDescendantOf(Player.Character)
 end
 
 local function removeExistingLines()
@@ -936,8 +924,6 @@ DefenseGroup:AddToggle("AntiLagToggle", {
 		end
 	end,
 })
-
-
 
 -- Extra Defense Toggles
 DefenseExtra:AddToggle("PaintDeleteToggle", {
@@ -1054,15 +1040,14 @@ DefenseExtra:AddToggle("AntiInputLag", {
 			_G.AntiInputLag = true
 
 			task.spawn(function()
-				local plr = game.Players.LocalPlayer
+				local plr = Player
 				local char = plr.Character
 				local hrp = char and char:FindFirstChild("HumanoidRootPart")
 				if not hrp then return end
 
 				local ToyName = "FoodHamburger"
-				local RS = game:GetService("ReplicatedStorage")
 				local Workspace = game:GetService("Workspace")
-				local SpawnRemote = RS.MenuToys.SpawnToyRemoteFunction
+				local SpawnRemote = ReplicatedStorage.MenuToys.SpawnToyRemoteFunction
 
 				while _G.AntiInputLag do
 					local toysFolder = Workspace:FindFirstChild(plr.Name.."SpawnedInToys")
@@ -1078,7 +1063,7 @@ DefenseExtra:AddToggle("AntiInputLag", {
 
 						local startWait = tick()
 						repeat 
-							R.Heartbeat:Wait()
+							RunService.Heartbeat:Wait()
 							toysFolder = Workspace:FindFirstChild(plr.Name.."SpawnedInToys")
 							burger = toysFolder and toysFolder:FindFirstChild(ToyName)
 						until burger or tick() - startWait > 1 or not _G.AntiInputLag
@@ -1123,9 +1108,9 @@ DefenseExtra:AddToggle("ShurikenAntiKick", {
 		_G.ShurikenAntiKick = Value
 
 		local function ClearKunai()
-			local plr = game.Players.LocalPlayer
+			local plr = Player
 			local inv = workspace:FindFirstChild(plr.Name.."SpawnedInToys")
-			local destroyrem = game.ReplicatedStorage:FindFirstChild("MenuToys") and game.ReplicatedStorage.MenuToys:FindFirstChild("DestroyToy")
+			local destroyrem = ReplicatedStorage:FindFirstChild("MenuToys") and ReplicatedStorage.MenuToys:FindFirstChild("DestroyToy")
 
 			if inv and destroyrem then
 				for _, v in pairs(inv:GetChildren()) do
@@ -1138,9 +1123,7 @@ DefenseExtra:AddToggle("ShurikenAntiKick", {
 
 		if Value then
 			task.spawn(function()
-				local plr = game.Players.LocalPlayer
-				local ReplicatedStorage = game:GetService("ReplicatedStorage")
-
+				local plr = Player
 				local setOwner = ReplicatedStorage:WaitForChild("GrabEvents"):WaitForChild("SetNetworkOwner")
 				local stickyEvent = ReplicatedStorage:WaitForChild("PlayerEvents"):WaitForChild("StickyPartEvent")
 				local spawnRemote = ReplicatedStorage.MenuToys.SpawnToyRemoteFunction
@@ -1330,9 +1313,6 @@ DefenseExtra:AddToggle("LoopTP", {
 	end,
 })
 
-
-
-
 -- Auto Attacker
 local AutoAttacker = false
 local headConnection
@@ -1345,7 +1325,7 @@ DefenseExtra:AddToggle("AutoAttacker", {
 })
 
 function CheckNetworkOwnerShipOnPlayer(potentialPlayer, condition)
-	if typeof(potentialPlayer) == "Instance" and (potentialPlayer:IsA("Player") and potentialPlayer.Character) and (potentialPlayer.Character:FindFirstChild("Head") and (potentialPlayer.Character.Head:FindFirstChild("PartOwner") and potentialPlayer.Character.Head.PartOwner.Value == LocalPlayer.Name)) then
+	if typeof(potentialPlayer) == "Instance" and (potentialPlayer:IsA("Player") and potentialPlayer.Character) and (potentialPlayer.Character:FindFirstChild("Head") and (potentialPlayer.Character.Head:FindFirstChild("PartOwner") and potentialPlayer.Character.Head.PartOwner.Value == Player.Name)) then
 		return not condition and true or potentialPlayer.Character.Head.PartOwner
 	end
 end
@@ -1358,22 +1338,23 @@ function lookAt(startPosition, targetPosition)
 end
 
 function SNOWshipPermanentPlayer(otherPlayer, callbackFunction)
-	if LocalPlayer.Character and (LocalPlayer.Character:FindFirstChild("HumanoidRootPart") and (typeof(otherPlayer) == "Instance" and (otherPlayer:IsA("Player") and otherPlayer.Character)) and (otherPlayer.Character:FindFirstChild("HumanoidRootPart") and otherPlayer.Character.HumanoidRootPart:FindFirstChild("FirePlayerPart"))) then
+	if Player.Character and (Player.Character:FindFirstChild("HumanoidRootPart") and (typeof(otherPlayer) == "Instance" and (otherPlayer:IsA("Player") and otherPlayer.Character)) and (otherPlayer.Character:FindFirstChild("HumanoidRootPart") and otherPlayer.Character.HumanoidRootPart:FindFirstChild("FirePlayerPart"))) then
 		local firePlayerPart = otherPlayer.Character.HumanoidRootPart.FirePlayerPart
-		local distanceFromFirePlayerPart = LocalPlayer:DistanceFromCharacter(firePlayerPart.Position)
+		local distanceFromFirePlayerPart = Player:DistanceFromCharacter(firePlayerPart.Position)
 		if type(callbackFunction) == "function" then
 			callbackFunction()
 		end
 		if distanceFromFirePlayerPart <= 30 then
-			setNetworkOwnerEvent:FireServer(firePlayerPart, lookAt(LocalPlayer.Character.HumanoidRootPart.Position, firePlayerPart.Position))
+			setNetworkOwnerEvent:FireServer(firePlayerPart, lookAt(Player.Character.HumanoidRootPart.Position, firePlayerPart.Position))
 			return true
 		end
 	end
 end
+
 function SNOWshipPlayer(otherPlayer, callbackFunction)
-	if LocalPlayer.Character and (LocalPlayer.Character:FindFirstChild("HumanoidRootPart") and (typeof(otherPlayer) == "Instance" and (otherPlayer:IsA("Player") and otherPlayer.Character)) and otherPlayer.Character:FindFirstChild("HumanoidRootPart")) then
+	if Player.Character and (Player.Character:FindFirstChild("HumanoidRootPart") and (typeof(otherPlayer) == "Instance" and (otherPlayer:IsA("Player") and otherPlayer.Character)) and otherPlayer.Character:FindFirstChild("HumanoidRootPart")) then
 		local otherPlayerHumanoidRootPart = otherPlayer.Character.HumanoidRootPart
-		local distanceFromOtherPlayer = LocalPlayer:DistanceFromCharacter(otherPlayerHumanoidRootPart.Position)
+		local distanceFromOtherPlayer = Player:DistanceFromCharacter(otherPlayerHumanoidRootPart.Position)
 		if CheckNetworkOwnerShipOnPlayer(otherPlayer) then
 			if type(callbackFunction) == "function" then
 				callbackFunction()
@@ -1381,18 +1362,20 @@ function SNOWshipPlayer(otherPlayer, callbackFunction)
 			return true
 		end
 		if distanceFromOtherPlayer <= 30 then
-			setNetworkOwnerEvent:FireServer(otherPlayerHumanoidRootPart, lookAt(LocalPlayer.Character.HumanoidRootPart.Position, otherPlayerHumanoidRootPart.Position))
+			setNetworkOwnerEvent:FireServer(otherPlayerHumanoidRootPart, lookAt(Player.Character.HumanoidRootPart.Position, otherPlayerHumanoidRootPart.Position))
 		end
 	end
 end
+
 function SNOWship(targetPart)
 	if targetPart and typeof(targetPart) == "Instance" then
-		local distanceFromCharacter = LocalPlayer:DistanceFromCharacter(targetPart.Position)
-		if LocalPlayer.Character and (LocalPlayer.Character:FindFirstChild("HumanoidRootPart") and distanceFromCharacter <= 30) then
-			setNetworkOwnerEvent:FireServer(targetPart, lookAt(LocalPlayer.Character.HumanoidRootPart.Position, targetPart.Position))
+		local distanceFromCharacter = Player:DistanceFromCharacter(targetPart.Position)
+		if Player.Character and (Player.Character:FindFirstChild("HumanoidRootPart") and distanceFromCharacter <= 30) then
+			setNetworkOwnerEvent:FireServer(targetPart, lookAt(Player.Character.HumanoidRootPart.Position, targetPart.Position))
 		end
 	end
 end
+
 function CreateSkyVelocity(skyObject)
 	if not skyObject:FindFirstChild("SkyVelocity") then
 		local skyVelocityBodyVelocity = Instance.new("BodyVelocity", skyObject)
@@ -1401,7 +1384,6 @@ function CreateSkyVelocity(skyObject)
 		skyVelocityBodyVelocity.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
 	end
 end
-
 
 local heldObjectName = nil
 character.DescendantAdded:Connect(function(hitPart)
@@ -1420,7 +1402,7 @@ character.DescendantAdded:Connect(function(hitPart)
 			end
 
 			-- Check if it's not yourself and not authorized (add isAuthorized if you have it)
-			if otherPlayer and otherPlayer ~= LocalPlayer then
+			if otherPlayer and otherPlayer ~= Player then
 				-- Death mode counter action
 				local counterAction = function()
 					local humanoidInstance = otherHumanoid
@@ -1433,7 +1415,7 @@ character.DescendantAdded:Connect(function(hitPart)
 							humanoidInstance.Sit = true
 						end
 						task.wait()
-						RS.GrabEvents.DestroyGrabLine:FireServer(otherHumanoidRootPart)
+						ReplicatedStorage.GrabEvents.DestroyGrabLine:FireServer(otherHumanoidRootPart)
 					end
 				end
 
@@ -1487,7 +1469,7 @@ PlayerView:AddToggle("SpinToggle", {
 	Default = false,
 	Callback = function(Value)
 		if Value then
-			spinningConnection = R.Heartbeat:Connect(function()
+			spinningConnection = RunService.Heartbeat:Connect(function()
 				local character = Player.Character
 				local root = character and character:FindFirstChild("HumanoidRootPart")
 				if root then root.CFrame = root.CFrame * CFrame.Angles(0, math.rad(spinSpeed), 0) end
@@ -1530,7 +1512,7 @@ PlayerView:AddToggle("SpeedModifierToggle", {
 	Callback = function(Value)
 		speedModifierEnabled = Value
 		if Value then
-			SpeedModConnection = R.Heartbeat:Connect(function()
+			SpeedModConnection = RunService.Heartbeat:Connect(function()
 				local character = Player.Character
 				if character then
 					local root = character:FindFirstChild("HumanoidRootPart")
@@ -1604,7 +1586,7 @@ Player.CharacterAdded:Connect(function(char)
 	end
 	if speedModifierEnabled and SpeedModConnection then
 		SpeedModConnection:Disconnect()
-		SpeedModConnection = R.Heartbeat:Connect(function()
+		SpeedModConnection = RunService.Heartbeat:Connect(function()
 			local root = char:FindFirstChild("HumanoidRootPart")
 			local humanoid = char:FindFirstChildOfClass("Humanoid")
 			if root and humanoid then
@@ -1732,21 +1714,21 @@ PlayerESP:AddToggle("NicknameESP", {
 		end
 
 		if Value then
-			for _, plr in pairs(PS:GetPlayers()) do 
+			for _, plr in pairs(Players:GetPlayers()) do 
 				createESP(plr) 
 				plr.CharacterAdded:Connect(function() 
 					task.wait(0.1)
 					createESP(plr) 
 				end) 
 			end
-			PS.PlayerAdded:Connect(function(plr) 
+			Players.PlayerAdded:Connect(function(plr) 
 				plr.CharacterAdded:Connect(function() 
 					task.wait(0.1)
 					createESP(plr) 
 				end) 
 			end)
 		else
-			for _, plr in pairs(PS:GetPlayers()) do
+			for _, plr in pairs(Players:GetPlayers()) do
 				if plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then
 					local hrp = plr.Character.HumanoidRootPart
 					if hrp:FindFirstChild("NameESP") then 
@@ -1773,7 +1755,7 @@ PlayerPerf:AddButton({
 				v.Enabled = false
 			end
 		end
-		for _, plr in pairs(PS:GetPlayers()) do
+		for _, plr in pairs(Players:GetPlayers()) do
 			if plr.Character then
 				for _, part in pairs(plr.Character:GetDescendants()) do
 					if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
@@ -1832,7 +1814,7 @@ end
 local function startNoclip()
 	if noclipConn then return end
 
-	noclipConn = R.Stepped:Connect(function()
+	noclipConn = RunService.Stepped:Connect(function()
 		if not noclipEnabled then return end
 		local char = Player.Character
 		if char then
@@ -1863,7 +1845,7 @@ end
 PlayerView:AddToggle("SelfNoclipToggle", {
 	Text = "Noclip",
 	Default = false,
-		Callback = function(on)
+	Callback = function(on)
 		SaveManager:Save("AutoSave")
 		noclipEnabled = on
 		if on then
@@ -1886,7 +1868,7 @@ local loopKillEnabledAll = false
 
 local function getPlayerList()
 	local list = {}
-	for _, plr in ipairs(PS:GetPlayers()) do
+	for _, plr in ipairs(Players:GetPlayers()) do
 		if plr ~= Player then
 			table.insert(list, plr.DisplayName .. " (" .. plr.Name .. ")")
 		end
@@ -1898,13 +1880,13 @@ local function getPlayerFromSelection(selection)
 	if not selection then return nil end
 	local username = selection:match("%((.-)%)")
 	if username then
-		return PS:FindFirstChild(username)
+		return Players:FindFirstChild(username)
 	end
 	return nil
 end
 
 local function autoblob()
-	local plr = game.Players.LocalPlayer
+	local plr = Player
 	local char = plr.Character
 	local hrp = char and char:FindFirstChild("HumanoidRootPart")
 	local hum = char and char:FindFirstChild("Humanoid")
@@ -1918,7 +1900,7 @@ local function autoblob()
 	if not blob then
 		task.spawn(function()
 			pcall(function()
-				game.ReplicatedStorage.MenuToys.SpawnToyRemoteFunction:InvokeServer("CreatureBlobman", hrp.CFrame, Vector3.zero)
+				ReplicatedStorage.MenuToys.SpawnToyRemoteFunction:InvokeServer("CreatureBlobman", hrp.CFrame, Vector3.zero)
 			end)
 		end)
 
@@ -1941,7 +1923,7 @@ local function autoblob()
 					hrp.Velocity = Vector3.zero
 					seat:Sit(hum)
 				end
-				R.Heartbeat:Wait()
+				RunService.Heartbeat:Wait()
 			until hum.SeatPart == seat or tick() - t > 1.5
 		end
 	end
@@ -1966,7 +1948,6 @@ TargetGroup:AddButton({
 	end
 })
 
-
 TargetGroup:AddToggle("LoopKickToggle", {
 	Text = "Kick (spam grab)",
 	Default = false,
@@ -1985,7 +1966,7 @@ TargetGroup:AddToggle("LoopKickToggle", {
 		end
 
 		task.spawn(function()    
-			local RS = game:GetService("ReplicatedStorage")    
+			local RS = ReplicatedStorage
 			local RunService = game:GetService("RunService")    
 			local GE = RS:WaitForChild("GrabEvents")    
 
@@ -2056,7 +2037,8 @@ TargetGroup:AddToggle("LoopKickToggle", {
 					dragging = false    
 					grabStartTime = 0    
 					if myRoot then    
-						myRoot.CFrame = savedPosmyRoot.Velocity + Vector3.zero    
+						myRoot.CFrame = savedPos    
+						myRoot.Velocity = Vector3.zero    
 					end    
 				end    
 
@@ -2069,14 +2051,13 @@ TargetGroup:AddToggle("LoopKickToggle", {
 			end    
 		end)    
 	end
-
 })
--- Loop Kill Single
 
+-- Loop Kill Single
 TargetGroup:AddToggle("LoopKillToggle", {
 	Text = "Loop kill",
 	Default = false,
-		Callback = function(on)
+	Callback = function(on)
 		SaveManager:Save("AutoSave")
 		loopKillEnabled = on
 		if on then
@@ -2088,7 +2069,7 @@ TargetGroup:AddToggle("LoopKillToggle", {
 			end
 
 			task.spawn(function()
-				local RS = game:GetService("ReplicatedStorage")
+				local RS = ReplicatedStorage
 				local GE = RS:WaitForChild("GrabEvents")
 
 				while loopKillEnabled do
@@ -2160,17 +2141,18 @@ TargetGroup:AddToggle("LoopKillToggle", {
 		end
 	end
 })
+
 -- Loop Kill All
 TargetGroup:AddToggle("LoopKillToggleAll", {
 	Text = "Loop kill All",
 	Default = false,
-		Callback = function(on)
+	Callback = function(on)
 		SaveManager:Save("AutoSave")
 		loopKillEnabledAll = on
 		if on then
 			task.spawn(function()
-				local RS = game:GetService("ReplicatedStorage")
-				local PS = game:GetService("Players")
+				local RS = ReplicatedStorage
+				local PS = Players
 				local GE = RS:WaitForChild("GrabEvents")
 
 				while loopKillEnabledAll do
@@ -2253,8 +2235,7 @@ TargetGroup:AddToggle("LoopKillToggleAll", {
 	end
 })
 
-
-TargetGroup:AddToggle("LoopKickToggle", {
+TargetGroup:AddToggle("LoopKickToggle2", {
 	Text = "Loop Kick (grab + blob)",
 	Default = false,
 	Callback = function(on)
@@ -2275,15 +2256,15 @@ TargetGroup:AddToggle("LoopKickToggle", {
 			kickLoopEnabled = false 
 			return 
 		end
-		
+
 		if spawnedInToysFolder:FindFirstChild("CreatureBlob") then
 			notify("No blob found!","Spawning blob!")
 		else
 			autoblob()
 		end
-		
+
 		task.spawn(function()
-			local RS = game:GetService("ReplicatedStorage")
+			local RS = ReplicatedStorage
 			local GE = RS:WaitForChild("GrabEvents")
 			local RunService = game:GetService("RunService")
 
@@ -2327,7 +2308,8 @@ TargetGroup:AddToggle("LoopKickToggle", {
 
 			while kickLoopEnabled do
 				if not target or not target.Parent or not target.Character then
-					break
+					task.wait(0.5)
+					target = SelectedPlayer
 				end
 
 				local tChar = target.Character
@@ -2373,7 +2355,7 @@ TargetGroup:AddToggle("LoopKickToggle", {
 			end
 
 			kickLoopEnabled = false
-			if Toggles.LoopKickToggle then Toggles.LoopKickToggle:SetValue(false) end
+			if Toggles.LoopKickToggle2 then Toggles.LoopKickToggle2:SetValue(false) end
 
 			if blobRoot then
 				blobRoot.CFrame = SavedPos
@@ -2478,8 +2460,6 @@ TargetGroup:AddToggle("DualHandLoopKick", {
 	end
 })
 
-
-
 -- Player Fling
 local playerFlingActive = false
 local flingBAV = nil
@@ -2488,7 +2468,7 @@ local originalPos = nil
 TargetGroup:AddToggle("PlayerFlingBtn", {
 	Text = "Fling",
 	Default = false,
-		Callback = function(on)
+	Callback = function(on)
 		SaveManager:Save("AutoSave")
 		playerFlingActive = on
 
@@ -2607,9 +2587,9 @@ BlobGroup:AddToggle("AutoSitZ", {
 	end
 })
 
-game:GetService("UserInputService").InputBegan:Connect(function(input, processed)
+UserInputService.InputBegan:Connect(function(input, processed)
 	if not processed and input.KeyCode == Enum.KeyCode.B and _G.AutoSitBlobZ then
-		local plr = game.Players.LocalPlayer
+		local plr = Player
 		local char = plr.Character
 		local hrp = char and char:FindFirstChild("HumanoidRootPart")
 		local hum = char and char:FindFirstChild("Humanoid")
@@ -2623,7 +2603,7 @@ game:GetService("UserInputService").InputBegan:Connect(function(input, processed
 		if not blob then
 			task.spawn(function()
 				pcall(function()
-					game.ReplicatedStorage.MenuToys.SpawnToyRemoteFunction:InvokeServer("CreatureBlobman", hrp.CFrame, Vector3.zero)
+					ReplicatedStorage.MenuToys.SpawnToyRemoteFunction:InvokeServer("CreatureBlobman", hrp.CFrame, Vector3.zero)
 				end)
 			end)
 
@@ -2646,7 +2626,7 @@ game:GetService("UserInputService").InputBegan:Connect(function(input, processed
 						hrp.Velocity = Vector3.zero
 						seat:Sit(hum)
 					end
-					R.Heartbeat:Wait()
+					RunService.Heartbeat:Wait()
 				until hum.SeatPart == seat or tick() - t > 1.5
 			end
 		end
@@ -2690,7 +2670,7 @@ local function GetBlobRoot()
 	return nil
 end
 
-R.Heartbeat:Connect(function()
+RunService.Heartbeat:Connect(function()
 	if not blobFlyActive or not blobMasterSwitch then 
 		if bvInstance then bvInstance:Destroy() bvInstance = nil end
 		if bgInstance then bgInstance:Destroy() bgInstance = nil end
@@ -2862,13 +2842,13 @@ TargetGroup:AddButton({
 		local char = Player.Character
 		local hum = char and char:FindFirstChild("Humanoid")
 		local seat = hum and hum.SeatPart
-		
+
 		if spawnedInToysFolder:FindFirstChild("CreatureBlob") then
 			notify("No blob found!","Spawning blob!")
 		else
 			autoblob()
 		end
-		
+
 		if not seat or seat.Parent.Name ~= "CreatureBlobman" then return end
 
 		local blob = seat.Parent
@@ -2924,7 +2904,7 @@ TargetGroup:AddButton({
 	Text = "Bring All (grab)",
 	Func = function()
 		task.spawn(function()
-			local RS = game:GetService("ReplicatedStorage")
+			local RS = ReplicatedStorage
 			local RunService = game:GetService("RunService")
 			local Players = game:GetService("Players")
 			local GE = RS:WaitForChild("GrabEvents")
@@ -3030,7 +3010,7 @@ TargetGroup:AddButton({
 				return
 			end
 
-			local RS = game:GetService("ReplicatedStorage")
+			local RS = ReplicatedStorage
 			local RunService = game:GetService("RunService")
 			local GE = RS:WaitForChild("GrabEvents")
 
@@ -3118,8 +3098,7 @@ TargetGroup:AddToggle("DestroyAntiKickToggle", {
 
 		if Value then
 			task.spawn(function()
-				local SetNetOwner = game:GetService("ReplicatedStorage").GrabEvents.SetNetworkOwner
-				local LocalPlayer = game.Players.LocalPlayer
+				local SetNetOwner = ReplicatedStorage.GrabEvents.SetNetworkOwner
 
 				local function invis_touch(part, cf)
 					SetNetOwner:FireServer(part, cf)
@@ -3129,7 +3108,7 @@ TargetGroup:AddToggle("DestroyAntiKickToggle", {
 					local part = toy:FindFirstChild("SoundPart")
 					if part then
 						invis_touch(part, part.CFrame)
-						if part:FindFirstChild("PartOwner") and part.PartOwner.Value == LocalPlayer.Name then
+						if part:FindFirstChild("PartOwner") and part.PartOwner.Value == Player.Name then
 							part.CFrame = CFrame.new(0, 1000, 0)
 						end
 					end
@@ -3165,7 +3144,7 @@ local antiAntiLagEnabled = false
 TargetGroup:AddToggle("AntiAntiInputLag", {
 	Text = "Anti Anti Input Lag",
 	Default = false,
-		Callback = function(on)
+	Callback = function(on)
 		SaveManager:Save("AutoSave")
 		antiAntiLagEnabled = on
 
@@ -3175,7 +3154,7 @@ TargetGroup:AddToggle("AntiAntiInputLag", {
 		end
 
 		task.spawn(function()
-			local plr = game.Players.LocalPlayer
+			local plr = Player
 			local char = plr.Character
 			local hrp = char:FindFirstChild("HumanoidRootPart")
 			if not hrp then return end
@@ -3246,7 +3225,7 @@ local notifyConnection = nil
 WhitelistGroup:AddToggle("JoinedNotifyBtn", {
 	Text = "Target Joined Notify",
 	Default = false,
-		Callback = function(on)
+	Callback = function(on)
 		SaveManager:Save("AutoSave")
 		notifyActive = on
 
@@ -3255,7 +3234,7 @@ WhitelistGroup:AddToggle("JoinedNotifyBtn", {
 
 			if notifyConnection then notifyConnection:Disconnect() end
 
-			notifyConnection = PS.PlayerAdded:Connect(function(newPlayer)
+			notifyConnection = Players.PlayerAdded:Connect(function(newPlayer)
 				if not notifyActive then return end
 
 				local detected = false
@@ -3290,7 +3269,7 @@ WhitelistGroup:AddToggle("JoinedNotifyBtn", {
 					sound.SoundId = "rbxassetid://4590662766"
 					sound.Volume = 2
 					sound:Play()
-					game:GetService("Debris"):AddItem(sound, 3)
+					Debris:AddItem(sound, 3)
 				end
 			end)
 		else
@@ -3360,7 +3339,7 @@ WhitelistGroup:AddToggle("RespawnNotifyBtn", {
 
 			-- Hook all current players
 			for _, plr in ipairs(Players:GetPlayers()) do
-				if plr ~= LocalPlayer then
+				if plr ~= Player then
 					trackRespawn(plr)
 				end
 			end
@@ -3382,20 +3361,18 @@ WhitelistGroup:AddToggle("RespawnNotifyBtn", {
 	end
 })
 
-
 local AuraGroup = Tabs.Aura:AddLeftGroupbox("Auras")
-
 
 AuraGroup:AddToggle("Deathaura", {
 	Text = "Death Aura",
 	Default = false,
-		Callback = function(on)
+	Callback = function(on)
 		SaveManager:Save("AutoSave")
 		deathAuraEnabled = on
 		if on then
 			task.spawn(function()
-				local RS = game:GetService("ReplicatedStorage")
-				local PS = game:GetService("Players")
+				local RS = ReplicatedStorage
+				local PS = Players
 				local GE = RS:WaitForChild("GrabEvents")
 
 				while deathAuraEnabled do
@@ -3567,7 +3544,7 @@ end
 GrabGroup:AddToggle("NoclipGrabToggle", {
 	Text = "Noclip Grab",
 	Default = false,
-		Callback = function(on)
+	Callback = function(on)
 		SaveManager:Save("AutoSave")
 		noclipGrabEnabled = on
 		if on then
@@ -3634,7 +3611,7 @@ end
 GrabGroup:AddToggle("MasslessGrabToggle", {
 	Text = "Massless Grab",
 	Default = false,
-		Callback = function(on)
+	Callback = function(on)
 		SaveManager:Save("AutoSave")
 		masslessGrabEnabled = on
 		if on then
@@ -3675,13 +3652,13 @@ local function startKillGrab()
 
 			while killGrabEnabled and grabPart.Parent and hum.Health > 0 do
 				pcall(function()
-					RS.GrabEvents.SetNetworkOwner:FireServer(root, myRoot.CFrame)
+					ReplicatedStorage.GrabEvents.SetNetworkOwner:FireServer(root, myRoot.CFrame)
 					hum.BreakJointsOnDeath = false
 					hum:ChangeState(Enum.HumanoidStateType.Dead)
 					hum.Health = 0
 					targetChar:BreakJoints()
 				end)
-				R.Heartbeat:Wait()
+				RunService.Heartbeat:Wait()
 			end
 		end)
 	end)
@@ -3697,7 +3674,7 @@ end
 GrabGroup:AddToggle("KillGrabToggle", {
 	Text = "Kill Grab",
 	Default = false,
-		Callback = function(on)
+	Callback = function(on)
 		SaveManager:Save("AutoSave")
 		killGrabEnabled = on
 		if on then
@@ -3754,15 +3731,13 @@ end)
 MiscGroup:AddToggle("WaterWalkToggle", {
 	Text = "water walk",
 	Default = false,
-		Callback = function(on)
+	Callback = function(on)
 		SaveManager:Save("AutoSave")
 		for _, item in pairs(waterParts) do
 			if item.part then item.part.CanCollide = on end
 		end
 	end
 })
-
-
 
 -- Triggerbot System
 local Triggerbot = {
@@ -3783,12 +3758,12 @@ local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Exclude
 
 task.spawn(function()
-	local success, result = pcall(function() return RS.GamepassEvents.CheckForGamepass:InvokeServer(20837132) end)
+	local success, result = pcall(function() return ReplicatedStorage.GamepassEvents.CheckForGamepass:InvokeServer(20837132) end)
 	if success and result then Triggerbot.maxDistance = 29.3 end
 end)
 
-if RS:FindFirstChild("GamepassEvents") and RS.GamepassEvents:FindFirstChild("FurtherReachBoughtNotifier") then
-	RS.GamepassEvents.FurtherReachBoughtNotifier.OnClientEvent:Connect(function() Triggerbot.maxDistance = 29.3 end)
+if ReplicatedStorage:FindFirstChild("GamepassEvents") and ReplicatedStorage.GamepassEvents:FindFirstChild("FurtherReachBoughtNotifier") then
+	ReplicatedStorage.GamepassEvents.FurtherReachBoughtNotifier.OnClientEvent:Connect(function() Triggerbot.maxDistance = 29.3 end)
 end
 
 function Triggerbot:GetTarget()
@@ -3887,8 +3862,8 @@ MiscGroup:AddToggle("PacketLagToggle", {
 
 		if Value then
 			task.spawn(function()
-				local localName = game.Players.LocalPlayer.Name
-				local RS = game:GetService("ReplicatedStorage")
+				local localName = Player.Name
+				local RS = ReplicatedStorage
 				local GrabEvent = RS:WaitForChild("GrabEvents"):WaitForChild("ExtendGrabLine")
 
 				while _G.PacketLagActive do
@@ -3922,13 +3897,13 @@ MiscGroup:AddSlider("LineLagAmount", {
 MiscGroup:AddToggle("LineLag", {
 	Text = "Line Lag",
 	Default = false,
-		Callback = function(on)
+	Callback = function(on)
 		SaveManager:Save("AutoSave")
 		LineSpam = on
 		if not on then return end
 
 		task.spawn(function()
-			local RS = game:GetService("ReplicatedStorage")
+			local RS = ReplicatedStorage
 			local RunService = game:GetService("RunService")
 			local Players = game:GetService("Players")
 			local GE = RS:WaitForChild("GrabEvents")
@@ -3951,7 +3926,7 @@ MiscGroup:AddToggle("LineLag", {
 					end
 				end
 
-				R.Heartbeat:Wait()
+				RunService.Heartbeat:Wait()
 			end
 		end)
 	end
@@ -3962,7 +3937,7 @@ local autoResetEnabled = false
 MiscGroup:AddToggle("AutoResetToggle", {
 	Text = "Auto Reset",
 	Default = false,
-		Callback = function(on)
+	Callback = function(on)
 		SaveManager:Save("AutoSave")
 		autoResetEnabled = on
 
@@ -3972,7 +3947,7 @@ MiscGroup:AddToggle("AutoResetToggle", {
 		end
 
 		task.spawn(function()
-			local plr = game.Players.LocalPlayer
+			local plr = Player
 			while autoResetEnabled do
 				local char = plr.Character
 				local hum = char and char:FindFirstChild("Humanoid")
@@ -3995,7 +3970,7 @@ MiscGroup:AddToggle("TriggerbotToggle", {
 		SaveManager:Save("AutoSave")
 		Triggerbot.Enabled = value
 		if Triggerbot.Enabled and not Triggerbot.Connection then
-			Triggerbot.Connection = R.Heartbeat:Connect(function() Triggerbot:OnHeartbeat() end)
+			Triggerbot.Connection = RunService.Heartbeat:Connect(function() Triggerbot:OnHeartbeat() end)
 		elseif not Triggerbot.Enabled and Triggerbot.Connection then
 			Triggerbot.Connection:Disconnect() 
 			Triggerbot.Connection = nil
@@ -4067,7 +4042,7 @@ local function getClosestPlayer(pos)
 	local closest = nil
 	local dist = math.huge
 	for _, plr in pairs(Players:GetPlayers()) do
-		if plr ~= LocalPlayer then
+		if plr ~= Player then
 			local char = plr.Character
 			local hrp = char and char:FindFirstChild("HumanoidRootPart")
 			if hrp then
@@ -4205,7 +4180,7 @@ MiscGroup:AddLabel("Anchor Object Bind"):AddKeyPicker("AnchorObjectKey", {
 		hl.Parent = targetModel
 
 		local connection
-		connection = R.Heartbeat:Connect(function()
+		connection = RunService.Heartbeat:Connect(function()
 			if not clone or not clone.Parent or not targetModel or not targetModel.Parent then
 				if connection then connection:Disconnect() end
 				return
@@ -4246,7 +4221,6 @@ CreditsGroup:AddLabel("Credits", {
 	DoesWrap = true,
 })
 
-
 -- UI Settings
 local MenuGroup = Tabs["UI Settings"]:AddLeftGroupbox("Menu")
 MenuGroup:AddButton("Unload", function() Library:Unload() end)
@@ -4262,12 +4236,10 @@ SaveManager:SetFolder("ArrivaCoreHub/Configs")
 SaveManager:BuildConfigSection(Tabs["UI Settings"])
 SaveManager:Load("AutoSave")
 ThemeManager:ApplyToTab(Tabs["UI Settings"])
-notify("Config file loaded!","Your settings were loaded from the last autosave!"	)
-
-
+notify("Config file loaded!","Your settings were loaded from the last autosave!")
 
 -- Player Events
-PS.PlayerRemoving:Connect(function(player)
+Players.PlayerRemoving:Connect(function(player)
 	notify("Leave Notification", (player and player.Name or "Unknown") .. " Left", 5)
 	if player:IsFriendsWith(Player.UserId) then
 		notify("Friend Notification", player.Name .. " left", 5)
@@ -4276,12 +4248,11 @@ PS.PlayerRemoving:Connect(function(player)
 	end
 end)
 
-PS.PlayerAdded:Connect(function(plr)
+Players.PlayerAdded:Connect(function(plr)
 	if plr:IsFriendsWith(Player.UserId) then
 		notify("Friend Notification", plr.Name .. " joined", 5)
 	end
 end)
-
 
 task.spawn(function()
 	while true do
@@ -4291,8 +4262,6 @@ task.spawn(function()
 		end)
 	end
 end)
-
-
 
 -- Send loaded message
 --sendHubLoadedMessage()
