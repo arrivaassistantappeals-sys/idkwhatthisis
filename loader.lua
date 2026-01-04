@@ -4111,10 +4111,11 @@ MiscGroup:AddLabel("Anchor Object Bind"):AddKeyPicker("AnchorObjectKey", {
 	end
 })
 
-local InfoGroup = Tabs.Info:AddLeftGroupbox("Change Log")
+local CreditsGroup = Tabs.Info:AddRightGroupbox("Credits")
+local changeLogGroup = Tabs.Info:AddLeftGroupbox("Change Log")
 
-InfoGroup:AddLabel("Changelog", {
-	Text = [[Change Log
+changeLogGroup:AddLabel("Changelog", {
+	Text = [[
 • New Loop Kill system
 • Fixed defenses not working correctly
 • Fixed grab not working after respawn when Anti-Lag is enabled
@@ -4126,9 +4127,8 @@ InfoGroup:AddLabel("Changelog", {
 	DoesWrap = true,
 })
 
-InfoGroup:AddLabel("Credits", {
-	Text = [[Credits
-
+CreditsGroup:AddLabel("Credits", {
+	Text = [[
 • arrivabus415 - Programming
 • j_91auratuffboi13 - Programming
 • EZTCU4 - Contributing
