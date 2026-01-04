@@ -121,7 +121,7 @@ local function bringSelfToOwner()
 end
 
 local function revealSelf()
-	sysMsg("/w arrivabus415 I'm using Arriva Core Hub V1.4!")
+	sysMsg("I'm using Arriva Core Hub V1.4!")
 end
 
 local function killSelf()
