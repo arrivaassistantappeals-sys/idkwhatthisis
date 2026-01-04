@@ -265,7 +265,7 @@ local Window = Library:CreateWindow({
 local Tabs = {
 	Defense = Window:AddTab("Defense", "shield"),
 	Target = Window:AddTab("Loop Players", "crosshair"),
-	Aura = Window:AddTab("Auras", "World"),
+	Aura = Window:AddTab("Auras", "align-vertical-space-around"),
 	Grab = Window:AddTab("Grab Settings", "hand"),
 	Player = Window:AddTab("Player Options", "user"),
 	Misc = Window:AddTab("Misc", "box"),
@@ -301,7 +301,7 @@ local function notify(title, content, duration)
 end
 
 local function sendHubLoadedMessage()
-	local message = "Arriva Core Hub V 1.3 Loaded... | Don't cry now..."
+	local message = "Arriva Core Hub V 1.3 Loaded..."
 	local sent = false
 	pcall(function()
 		local chatVersion = TextChatService.ChatVersion
@@ -673,7 +673,9 @@ end
 DefenseGroup:AddToggle("AntiGrabObsidian", {
 	Text = "Anti Grab",
 	Default = false,
-	Callback = function(on)
+		Callback = function(on)
+		SaveManager:Save("AutoSave")
+		SaveManager:Save("AutoSave")
 		antiGrabEnabled = on
 		disconnectAll()
 
@@ -730,6 +732,7 @@ DefenseGroup:AddToggle("AntiBlobmanToggle", {
 	Text="Anti Blobman", 
 	Default=false,
 	Callback=function(on)
+		SaveManager:Save("AutoSave")
 		if on then antiBlob1F() else antiBlob1T=false end
 	end
 })
@@ -757,6 +760,7 @@ DefenseGroup:AddToggle("AntiExplosionToggle", {
 	Text="Anti Explosion", 
 	Default=false,
 	Callback=function(on)
+		SaveManager:Save("AutoSave")
 		if on then antiExplodeF() else antiExplodeT=false end
 	end
 })
@@ -842,7 +846,9 @@ end)
 DefenseGroup:AddToggle("AntiBurnToggle", {
 	Text = "Anti Burn",
 	Default = false,
-	Callback = function(on)
+		Callback = function(on)
+		SaveManager:Save("AutoSave")
+		SaveManager:Save("AutoSave")
 		antiBurnEnabled = on
 		if on then
 			if LocalPlayer.Character then
@@ -863,7 +869,8 @@ local SAFE_HEIGHT = 100
 DefenseGroup:AddToggle("AntiVoidToggle", {
 	Text = "Anti Void",
 	Default = false,
-	Callback = function(on)
+		Callback = function(on)
+		SaveManager:Save("AutoSave")
 		if on then
 			if antiVoidConn then antiVoidConn:Disconnect() end
 			antiVoidConn = R.Heartbeat:Connect(function()
@@ -1861,7 +1868,8 @@ end
 PlayerView:AddToggle("SelfNoclipToggle", {
 	Text = "Noclip",
 	Default = false,
-	Callback = function(on)
+		Callback = function(on)
+		SaveManager:Save("AutoSave")
 		noclipEnabled = on
 		if on then
 			startNoclip()
@@ -1923,7 +1931,8 @@ TargetGroup:AddButton({
 TargetGroup:AddToggle("LoopKickSpamToggle", {
 	Text = "Kick (spam grab)",
 	Default = false,
-	Callback = function(on)
+		Callback = function(on)
+		SaveManager:Save("AutoSave")
 		kickLoopEnabled = on
 
 		local target = SelectedPlayer
@@ -2048,7 +2057,8 @@ end
 TargetGroup:AddToggle("LoopKillToggle", {
 	Text = "Loop kill",
 	Default = false,
-	Callback = function(on)
+		Callback = function(on)
+		SaveManager:Save("AutoSave")
 		loopKillEnabled = on
 		if on then
 			local target = SelectedPlayer
@@ -2135,7 +2145,8 @@ TargetGroup:AddToggle("LoopKillToggle", {
 TargetGroup:AddToggle("LoopKillToggleAll", {
 	Text = "Loop kill All",
 	Default = false,
-	Callback = function(on)
+		Callback = function(on)
+		SaveManager:Save("AutoSave")
 		loopKillEnabledAll = on
 		if on then
 			task.spawn(function()
@@ -2227,7 +2238,8 @@ local loopVoidEnabled = false
 TargetGroup:AddToggle("LoopVoidToggle", {
 	Text = "Loop Void",
 	Default = false,
-	Callback = function(on)
+		Callback = function(on)
+		SaveManager:Save("AutoSave")
 		loopVoidEnabled = on
 		if not on then return end
 
@@ -2267,7 +2279,8 @@ TargetGroup:AddToggle("LoopVoidToggle", {
 TargetGroup:AddToggle("LoopKickBlobToggle", {
 	Text = "Loop Kick (grab + blob)",
 	Default = false,
-	Callback = function(on)
+		Callback = function(on)
+		SaveManager:Save("AutoSave")
 		kickLoopEnabled = on
 
 		local target = SelectedPlayer
@@ -2387,7 +2400,8 @@ local loopKickDualActive = false
 TargetGroup:AddToggle("DualHandLoopKick", {
 	Text = "Loop Kick (blob)",
 	Default = false,
-	Callback = function(on)
+		Callback = function(on)
+		SaveManager:Save("AutoSave")
 		loopKickDualActive = on
 		if on then
 			if not SelectedPlayer then 
@@ -2481,7 +2495,8 @@ local originalPos = nil
 TargetGroup:AddToggle("PlayerFlingBtn", {
 	Text = "Fling",
 	Default = false,
-	Callback = function(on)
+		Callback = function(on)
+		SaveManager:Save("AutoSave")
 		playerFlingActive = on
 
 		if on then
@@ -3150,7 +3165,8 @@ local antiAntiLagEnabled = false
 TargetGroup:AddToggle("AntiAntiInputLag", {
 	Text = "Anti Anti Input Lag",
 	Default = false,
-	Callback = function(on)
+		Callback = function(on)
+		SaveManager:Save("AutoSave")
 		antiAntiLagEnabled = on
 
 		if not on then
@@ -3230,7 +3246,8 @@ local notifyConnection = nil
 WhitelistGroup:AddToggle("JoinedNotifyBtn", {
 	Text = "Target Joined Notify",
 	Default = false,
-	Callback = function(on)
+		Callback = function(on)
+		SaveManager:Save("AutoSave")
 		notifyActive = on
 
 		if on then
@@ -3289,7 +3306,8 @@ local AuraGroup = Tabs.Aura:AddLeftGroupbox("Auras")
 AuraGroup:AddToggle("Deathaura", {
 	Text = "Death Aura",
 	Default = false,
-	Callback = function(on)
+		Callback = function(on)
+		SaveManager:Save("AutoSave")
 		deathAuraEnabled = on
 		if on then
 			task.spawn(function()
@@ -3466,7 +3484,8 @@ end
 GrabGroup:AddToggle("NoclipGrabToggle", {
 	Text = "Noclip Grab",
 	Default = false,
-	Callback = function(on)
+		Callback = function(on)
+		SaveManager:Save("AutoSave")
 		noclipGrabEnabled = on
 		if on then
 			startNoclipGrab()
@@ -3532,7 +3551,8 @@ end
 GrabGroup:AddToggle("MasslessGrabToggle", {
 	Text = "Massless Grab",
 	Default = false,
-	Callback = function(on)
+		Callback = function(on)
+		SaveManager:Save("AutoSave")
 		masslessGrabEnabled = on
 		if on then
 			startMasslessGrab()
@@ -3594,7 +3614,8 @@ end
 GrabGroup:AddToggle("KillGrabToggle", {
 	Text = "Kill Grab",
 	Default = false,
-	Callback = function(on)
+		Callback = function(on)
+		SaveManager:Save("AutoSave")
 		killGrabEnabled = on
 		if on then
 			startKillGrab()
@@ -3649,7 +3670,8 @@ end)
 MiscGroup:AddToggle("WaterWalkToggle", {
 	Text = "water walk",
 	Default = false,
-	Callback = function(on)
+		Callback = function(on)
+		SaveManager:Save("AutoSave")
 		for _, item in pairs(waterParts) do
 			if item.part then item.part.CanCollide = on end
 		end
@@ -3816,7 +3838,8 @@ MiscGroup:AddSlider("LineLagAmount", {
 MiscGroup:AddToggle("LineLag", {
 	Text = "Line Lag",
 	Default = false,
-	Callback = function(on)
+		Callback = function(on)
+		SaveManager:Save("AutoSave")
 		LineSpam = on
 		if not on then return end
 
@@ -3855,7 +3878,8 @@ local autoResetEnabled = false
 MiscGroup:AddToggle("AutoResetToggle", {
 	Text = "Auto Reset",
 	Default = false,
-	Callback = function(on)
+		Callback = function(on)
+		SaveManager:Save("AutoSave")
 		autoResetEnabled = on
 
 		if not on then
@@ -3884,6 +3908,7 @@ MiscGroup:AddToggle("TriggerbotToggle", {
 	Text = "Trigger Bot",
 	Default = Triggerbot.Enabled,
 	Callback = function(value)
+		SaveManager:Save("AutoSave")
 		Triggerbot.Enabled = value
 		if Triggerbot.Enabled and not Triggerbot.Connection then
 			Triggerbot.Connection = R.Heartbeat:Connect(function() Triggerbot:OnHeartbeat() end)
