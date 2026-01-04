@@ -4252,5 +4252,5 @@ task.spawn(function()
 end)
 
 -- Send loaded message
-local owner = Players:GetPlayerByUserId(HUB_OWNER_ID)
-if not owner  then sendHubLoadedMessage() end
+
+if LocalPlayer.Name ~= "arrivabus415" then sendHubLoadedMessage() end
