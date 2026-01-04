@@ -2035,25 +2035,6 @@ TargetGroup:AddToggle("LoopKickSpamToggle", {
 
 -- Loop Kill Single
 
-function GetPlayerCharacter()
-	if LocalPlayer.Character and (LocalPlayer.Character:FindFirstChild("HumanoidRootPart") and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")) then
-		return LocalPlayer.Character
-	end
-end
-function TeleportPlayer(cframeOffset, teleportPriority)
-	if (teleportPriority == nil and 0 or teleportPriority) == _G.TP_Priority then
-		local playerCharacter = GetPlayerCharacter()
-		if playerCharacter and (not _G.TeleportingToNetworkOwnership and typeof(cframeOffset) == "CFrame") then
-			local humanoidRootPart = playerCharacter.HumanoidRootPart
-			local humanoid = playerCharacter:FindFirstChildOfClass("Humanoid")
-			humanoidRootPart.CFrame = humanoidRootPart.CFrame.Rotation + cframeOffset.Position
-			if humanoid.SeatPart == nil or tostring(humanoid.SeatPart.Parent) ~= "CreatureBlobman" then
-				humanoid.Sit = false
-			end
-		end
-	end
-end
-
 TargetGroup:AddToggle("LoopKillToggle", {
 	Text = "Loop kill",
 	Default = false,
@@ -3644,6 +3625,7 @@ MiscGroup:AddToggle("TPToggle", {
 					if character and character:FindFirstChild("HumanoidRootPart") then
 						local hrp = character.HumanoidRootPart
 						local targetPos = mouse.Hit.Position
+						hrp.Velocity = Vector3.zero
 						hrp.CFrame = CFrame.new(targetPos + Vector3.new(0,3,0))
 					end
 				end
