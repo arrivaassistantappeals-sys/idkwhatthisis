@@ -96,11 +96,9 @@ local function findTarget(targetStr)
 	-- Partial match (username or display name)
 	local matches = {}
 	for _, plr in ipairs(Players:GetPlayers()) do
-		if WHITELIST[plr.UserId] then -- Only match whitelisted players
 			if plr.Name:lower():find(targetStr) or plr.DisplayName:lower():find(targetStr) then
 				table.insert(matches, plr)
 			end
-		end
 	end
 
 	return #matches > 0 and matches or nil
