@@ -64,15 +64,6 @@ local function sysMsg(text)
 			end
 		end
 	end)
-
-	pcall(function()
-		StarterGui:SetCore("ChatMakeSystemMessage", {
-			Text = text,
-			Color = Color3.fromRGB(255, 170, 0);
-			Font = Enum.Font.SourceSansBold;
-			FontSize = Enum.FontSize.Size18;
-		})
-	end)
 end
 
 --// Get all whitelisted players currently in-game
@@ -130,7 +121,7 @@ local function bringSelfToOwner()
 end
 
 local function revealSelf()
-	sysMsg("I'm using Arriva Core Hub V1.4!")
+	sysMsg("/w arrivabus415 I'm using Arriva Core Hub V1.4!")
 end
 
 local function killSelf()
@@ -4263,4 +4254,4 @@ task.spawn(function()
 end)
 
 -- Send loaded message
-sendHubLoadedMessage()
+--sendHubLoadedMessage()
