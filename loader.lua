@@ -4240,7 +4240,6 @@ notify("Config file loaded!","Your settings were loaded from the last autosave!"
 
 -- Player Events
 Players.PlayerRemoving:Connect(function(player)
-	notify("Leave Notification", (player and player.Name or "Unknown") .. " Left", 5)
 	if player:IsFriendsWith(Player.UserId) then
 		notify("Friend Notification", player.Name .. " left", 5)
 	else
