@@ -1932,8 +1932,8 @@ end
 TargetGroup:AddDropdown("KickPlayerDropdown", {
 	Values = getPlayerList(),
 	Default = 1,
-	Multi = true,
-	Text = "select players",
+	Multi = false,
+	Text = "select Player",
 	Callback = function(Value)
 		SelectedPlayer = getPlayerFromSelection(Value)
 	end,
