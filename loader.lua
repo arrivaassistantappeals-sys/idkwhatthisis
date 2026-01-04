@@ -31,6 +31,7 @@ local WHITELIST = {
 	[1310436801] = "Danielrbl21",
 	[9668498177] = "ezzz_FO",
 	[1187171573] = "XxkubaxX1075",
+	[3892170520] = "VulgoMenta",
 }
 
 --// Whitelist check
