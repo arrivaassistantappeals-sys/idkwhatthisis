@@ -2207,55 +2207,14 @@ TargetGroup:AddToggle("LoopKillToggleAll", {
 		end
 	end
 })
--- Loop Void
-local loopVoidEnabled = false
-TargetGroup:AddToggle("LoopVoidToggle", {
-	Text = "Loop Void",
-	Default = false,
-		Callback = function(on)
-		SaveManager:Save("AutoSave")
-		loopVoidEnabled = on
-		if not on then return end
 
-		task.spawn(function()
-			local RS = game:GetService("ReplicatedStorage")
-			local RunService = game:GetService("RunService")
-			local GE = RS:WaitForChild("GrabEvents")
 
-			while loopVoidEnabled do
-				local target = SelectedPlayer
-
-				if not target or not target.Character then
-					task.wait(0.5)
-					continue
-				end
-
-				local tRoot = target.Character:FindFirstChild("HumanoidRootPart")
-				if not tRoot then
-					task.wait(0.5)
-					continue
-				end
-
-				pcall(function()
-					GE.SetNetworkOwner:FireServer(tRoot)
-					tRoot.CFrame = CFrame.new(0, -10000, 0)
-					GE.CreateGrabLine:FireServer(tRoot, Vector3.zero, tRoot.Position, false)
-					GE.DestroyGrabLine:FireServer(tRoot)
-				end)
-
-				task.wait(1)
-			end
-		end)
-	end
-})
-
--- Loop Kick with Blob
-TargetGroup:AddToggle("LoopKickBlobToggle", {
+TargetGroup:AddToggle("LoopKickToggle", {
 	Text = "Loop Kick (grab + blob)",
 	Default = false,
-		Callback = function(on)
-		SaveManager:Save("AutoSave")
+	Callback = function(on)
 		kickLoopEnabled = on
+		SaveManager:Save("AutoSave")
 
 		local target = SelectedPlayer
 		while on and not target do
@@ -2271,7 +2230,6 @@ TargetGroup:AddToggle("LoopKickBlobToggle", {
 			kickLoopEnabled = false 
 			return 
 		end
-
 		task.spawn(function()
 			local RS = game:GetService("ReplicatedStorage")
 			local GE = RS:WaitForChild("GrabEvents")
@@ -2283,10 +2241,12 @@ TargetGroup:AddToggle("LoopKickBlobToggle", {
 
 			local CG = scriptObj and scriptObj:FindFirstChild("CreatureGrab")
 			local CD = scriptObj and scriptObj:FindFirstChild("CreatureDrop")
+
 			local R_Det = blob:FindFirstChild("RightDetector")
 			local R_Weld = R_Det and (R_Det:FindFirstChild("RightWeld") or R_Det:FindFirstChildWhichIsA("Weld"))
 
 			local SavedPos = blobRoot.CFrame 
+
 			local tChar = target.Character
 			local tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")
 
@@ -2303,7 +2263,7 @@ TargetGroup:AddToggle("LoopKickBlobToggle", {
 						GE.CreateGrabLine:FireServer(tRoot, Vector3.zero, tRoot.Position, false)
 						GE.SetNetworkOwner:FireServer(tRoot, blobRoot.CFrame)
 					end)
-					R.Heartbeat:Wait()
+					RunService.Heartbeat:Wait()
 				end
 
 				blobRoot.CFrame = SavedPos
@@ -2323,6 +2283,7 @@ TargetGroup:AddToggle("LoopKickBlobToggle", {
 				local tHum = tChar and tChar:FindFirstChild("Humanoid")
 
 				if tRoot and tHum and tHum.Health > 0 and blobRoot then
+
 					blobRoot.CFrame = SavedPos
 					blobRoot.Velocity = Vector3.zero
 
@@ -2337,6 +2298,7 @@ TargetGroup:AddToggle("LoopKickBlobToggle", {
 						pcall(function()
 							tHum.PlatformStand = true
 							tHum.Sit = true
+
 							GE.SetNetworkOwner:FireServer(tRoot, lockPos)
 
 							if R_Det then
@@ -2355,11 +2317,11 @@ TargetGroup:AddToggle("LoopKickBlobToggle", {
 				end
 
 				if not kickLoopEnabled then break end
-				R.Heartbeat:Wait()
+				RunService.Heartbeat:Wait()
 			end
 
 			kickLoopEnabled = false
-			if Toggles.LoopKickBlobToggle then Toggles.LoopKickBlobToggle:SetValue(false) end
+			if Toggles.LoopKickToggle then Toggles.LoopKickToggle:SetValue(false) end
 
 			if blobRoot then
 				blobRoot.CFrame = SavedPos
@@ -2368,6 +2330,8 @@ TargetGroup:AddToggle("LoopKickBlobToggle", {
 		end)
 	end
 })
+
+
 
 -- Dual Hand Loop Kick
 local loopKickDualActive = false
