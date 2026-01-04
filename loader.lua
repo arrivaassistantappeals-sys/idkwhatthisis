@@ -1921,12 +1921,11 @@ TargetGroup:AddButton({
 	end
 })
 
--- Loop Kick Toggle (Spam Grab)
-TargetGroup:AddToggle("LoopKickSpamToggle", {
+
+TargetGroup:AddToggle("LoopKickToggle", {
 	Text = "Kick (spam grab)",
 	Default = false,
-		Callback = function(on)
-		SaveManager:Save("AutoSave")
+	Callback = function(on)
 		kickLoopEnabled = on
 
 		local target = SelectedPlayer
@@ -1938,7 +1937,7 @@ TargetGroup:AddToggle("LoopKickSpamToggle", {
 		if not on then    
 			kickLoopEnabled = false    
 			return    
-		end    
+		end
 
 		task.spawn(function()    
 			local RS = game:GetService("ReplicatedStorage")    
@@ -1967,6 +1966,7 @@ TargetGroup:AddToggle("LoopKickSpamToggle", {
 				myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")    
 
 				if tRoot and tHum and tHum.Health > 0 and myRoot then    
+
 					tRoot.AssemblyLinearVelocity = Vector3.zero    
 					tRoot.AssemblyAngularVelocity = Vector3.zero    
 					tRoot.Velocity = Vector3.zero    
@@ -1978,7 +1978,8 @@ TargetGroup:AddToggle("LoopKickSpamToggle", {
 						pcall(function()    
 							tHum.PlatformStand = true    
 							tHum.Sit = true    
-							GE.SetNetworkOwner:FireServer(tRoot, myRoot.CFrame)   
+							GE.SetNetworkOwner:FireServer(tRoot, myRoot.CFrame)    
+							GE.CreateGrabLine:FireServer(tRoot, Vector3.zero, tRoot.Position, false)    
 						end)    
 
 						if grabStartTime == 0 then grabStartTime = tick() end    
@@ -2001,16 +2002,16 @@ TargetGroup:AddToggle("LoopKickSpamToggle", {
 
 						pcall(function()    
 							GE.SetNetworkOwner:FireServer(tRoot, lockPos)    
+							GE.CreateGrabLine:FireServer(tRoot, Vector3.zero, tRoot.Position, false)    
 							GE.DestroyGrabLine:FireServer(tRoot)    
-							GE.SetNetworkOwner:FireServer(tRoot, lockPos)    
+							GE.CreateGrabLine:FireServer(tRoot, Vector3.zero, tRoot.Position, false)    
 						end)    
 					end    
 				else    
 					dragging = false    
 					grabStartTime = 0    
 					if myRoot then    
-						myRoot.CFrame = savedPos    
-						myRoot.Velocity = Vector3.zero    
+						myRoot.CFrame = savedPosmyRoot.Velocity + Vector3.zero    
 					end    
 				end    
 
@@ -2023,8 +2024,8 @@ TargetGroup:AddToggle("LoopKickSpamToggle", {
 			end    
 		end)    
 	end
-})
 
+})
 -- Loop Kill Single
 
 TargetGroup:AddToggle("LoopKillToggle", {
