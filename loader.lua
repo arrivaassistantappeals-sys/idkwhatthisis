@@ -1977,7 +1977,7 @@ TargetGroup:AddToggle("LoopKickSpamToggle", {
 						pcall(function()    
 							tHum.PlatformStand = true    
 							tHum.Sit = true    
-							GE.SetNetworkOwner:FireServer(tRoot, CFrame.new(myRoot.Position, tRoot.Position))   
+							GE.SetNetworkOwner:FireServer(tRoot, myRoot.CFrame)   
 							GE.CreateGrabLine:FireServer(tRoot, Vector3.zero, tRoot.Position, false)    
 						end)    
 
