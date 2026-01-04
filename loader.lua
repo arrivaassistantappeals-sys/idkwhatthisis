@@ -1979,7 +1979,6 @@ TargetGroup:AddToggle("LoopKickSpamToggle", {
 							tHum.PlatformStand = true    
 							tHum.Sit = true    
 							GE.SetNetworkOwner:FireServer(tRoot, myRoot.CFrame)   
-							GE.CreateGrabLine:FireServer(tRoot, Vector3.zero, tRoot.Position, false)    
 						end)    
 
 						if grabStartTime == 0 then grabStartTime = tick() end    
@@ -2002,9 +2001,8 @@ TargetGroup:AddToggle("LoopKickSpamToggle", {
 
 						pcall(function()    
 							GE.SetNetworkOwner:FireServer(tRoot, lockPos)    
-							GE.CreateGrabLine:FireServer(tRoot, Vector3.zero, tRoot.Position, false)    
 							GE.DestroyGrabLine:FireServer(tRoot)    
-							GE.CreateGrabLine:FireServer(tRoot, Vector3.zero, tRoot.Position, false)    
+							GE.SetNetworkOwner:FireServer(tRoot, lockPos)    
 						end)    
 					end    
 				else    
