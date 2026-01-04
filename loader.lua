@@ -719,13 +719,13 @@ local function antiBlob1F()
 
 	if antiBlob1F then
 		for _, Descendant in pairs(workspace:GetDescendants()) do
-			if Descendant.Name == "CreatureBlobman" then
+			if Descendant.Name == "CreatureBlobman" and Descendant.Parent ~= spawnedInToysFolder then
 				anti(Descendant)
 			end
 		end
 
 		workspace.DescendantAdded:Connect(function(Descendant)
-			if Descendant.Name == "CreatureBlobman" then
+			if Descendant.Name == "CreatureBlobman" and Descendant.Parent ~= spawnedInToysFolder then
 				wait(0.1)
 				anti(Descendant)
 			end
