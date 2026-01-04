@@ -270,7 +270,7 @@ local Tabs = {
 	Player = Window:AddTab("Player Options", "user"),
 	Misc = Window:AddTab("Misc", "box"),
 	["UI Settings"] = Window:AddTab("UI Settings", "settings"),
-	Changelog = Window:AddTab("Changelog", "clipboard-pen-line")
+	Info = Window:AddTab("Information", "clipboard-pen-line")
 }
 
 -- Services
@@ -4111,11 +4111,10 @@ MiscGroup:AddLabel("Anchor Object Bind"):AddKeyPicker("AnchorObjectKey", {
 	end
 })
 
-local ChangelogGroup = Tabs.Changelog:AddLeftGroupbox("Change Log")
+local InfoGroup = Tabs.Info:AddLeftGroupbox("Change Log")
 
-ChangelogGroup:AddLabel("Changelog", {
-	Text = [[Arriva Core Hub V1.4
-
+InfoGroup:AddLabel("Changelog", {
+	Text = [[Change Log
 • New Loop Kill system
 • Fixed defenses not working correctly
 • Fixed grab not working after respawn when Anti-Lag is enabled
@@ -4127,6 +4126,16 @@ ChangelogGroup:AddLabel("Changelog", {
 	DoesWrap = true,
 })
 
+InfoGroup:AddLabel("Credits", {
+	Text = [[Credits
+
+• arrivabus415 - Programming
+• j_91auratuffboi13 - Programming
+• EZTCU4 - Contributing
+• 00FSwedish - QA Testing
+]],
+	DoesWrap = true,
+})
 
 
 -- UI Settings
