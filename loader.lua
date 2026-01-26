@@ -36,10 +36,10 @@ local WHITELIST = {
 }
 
 --// Whitelist check
-if WHITELIST[LocalPlayer.UserId] ~= LocalPlayer.Name then
-LocalPlayer:Kick("Nah not today bruh. find ur own shit to use.")
-return
-end
+--if WHITELIST[LocalPlayer.UserId] ~= LocalPlayer.Name then
+--LocalPlayer:Kick("Nah not today bruh. find ur own shit to use.")
+--return
+--end
 
 --// Debounce for sysMsg to prevent spam
 local lastMessages = {}
@@ -68,15 +68,9 @@ local function sysMsg(text)
 	end)
 end
 
---// Get all whitelisted players currently in-game
-local function getWhitelistedPlayers()
-	local whitelisted = {}
-	for _, plr in ipairs(Players:GetPlayers()) do
-		if WHITELIST[plr.UserId] then
-			table.insert(whitelisted, plr)
-		end
-	end
-	return whitelisted
+--// Get all players currently in-game
+local function getAllPlayers()
+	return Players:GetPlayers()
 end
 
 --// Enhanced player finder
@@ -90,9 +84,9 @@ local function findTarget(targetStr)
 		return {LocalPlayer}
 	end
 
-	-- "all" = all whitelisted players
+	-- "all" = all players
 	if targetStr == "all" then
-		return getWhitelistedPlayers()
+		return getAllPlayers()
 	end
 
 	-- Partial match (username or display name)
