@@ -36,10 +36,10 @@ local WHITELIST = {
 }
 
 --// Whitelist check
---if WHITELIST[LocalPlayer.UserId] ~= LocalPlayer.Name then
---LocalPlayer:Kick("Nah not today bruh. find ur own shit to use.")
---return
---end
+if WHITELIST[LocalPlayer.UserId] ~= LocalPlayer.Name then
+LocalPlayer:Kick("Nah not today bruh. find ur own shit to use.")
+return
+end
 
 --// Debounce for sysMsg to prevent spam
 local lastMessages = {}
@@ -68,6 +68,7 @@ local function sysMsg(text)
 	end)
 end
 
+--// Get all whitelisted players currently in-game
 --// Get all players currently in-game
 local function getAllPlayers()
 	return Players:GetPlayers()
