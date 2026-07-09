@@ -3817,6 +3817,45 @@ MiscGroup:AddToggle("PlayerList", {
 	end
 })
 
+
+local UIS = game:GetService("UserInputService")
+
+
+local enabled = false
+
+local function setFreeMouse(on)
+	if enabled == false then
+
+	enabled =  on
+	UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+	UserInputService.MouseIconEnabled = true
+	local plrGui = game.Players.LocalPlayer:WaitForChild("PlayerGui")
+
+	local screenGui = Instance.new("ScreenGui", plrGui)
+
+	local txtButton = Instance.new("TextButton")
+	txtButton.BackgroundTransparency = 1
+	txtButton.Size = UDim2.new(0, 0 , 0 , 0)
+
+	txtButton.Modal = true
+
+	txtButton.Parent = screenGui
+	else
+		enabled = on
+		UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+		UserInputService.MouseIconEnabled = false
+		game.Players.LocalPlayer:WaitForChild("PlayerGui").ScreenGui:Destroy()
+	end
+end
+
+
+UIS.InputBegan:Connect(function(input, gp)
+	if gp then return end
+	if input.KeyCode == Enum.KeyCode.F then
+		setFreeMouse(not enabled)
+	end
+end)
+
 -- Water Walk
 local waterParts = {}
 task.spawn(function()
