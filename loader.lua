@@ -37,8 +37,8 @@ local WHITELIST = {
 
 --// Whitelist check
 if WHITELIST[LocalPlayer.UserId] ~= LocalPlayer.Name then
-LocalPlayer:Kick("Nah not today bruh. find ur own shit to use.")
-return
+	LocalPlayer:Kick("Nah not today bruh. find ur own shit to use.")
+	return
 end
 
 --// Debounce for sysMsg to prevent spam
@@ -93,9 +93,9 @@ local function findTarget(targetStr)
 	-- Partial match (username or display name)
 	local matches = {}
 	for _, plr in ipairs(Players:GetPlayers()) do
-			if plr.Name:lower():find(targetStr) or plr.DisplayName:lower():find(targetStr) then
-				table.insert(matches, plr)
-			end
+		if plr.Name:lower():find(targetStr) or plr.DisplayName:lower():find(targetStr) then
+			table.insert(matches, plr)
+		end
 	end
 
 	return #matches > 0 and matches or nil
@@ -408,7 +408,7 @@ local function startAntiGucci()
 
 	humanoid:GetPropertyChangedSignal("Jump"):Connect(function() 
 		if humanoid.Jump and humanoid.Sit then 
-			restoreFrames = 15 
+			restoreFrames = 60 
 			safePosition = rootPart.Position 
 		end 
 	end)
@@ -427,7 +427,7 @@ local function startAntiGucci()
 		while humanoid.Sit do 
 			task.wait(1) 
 		end 
-		task.wait(0.5) 
+		task.wait(1) 
 		rootPart.CFrame = CFrame.new(safePosition) 
 	end)
 end
@@ -650,6 +650,8 @@ end
 --------------------------------------------------
 -- UI Toggle
 --------------------------------------------------
+
+
 
 DefenseGroup:AddToggle("AntiGrabObsidian", {
 	Text = "Anti Grab",
@@ -2196,7 +2198,7 @@ TargetGroup:AddToggle("LoopKillToggleAll", {
 									tHum.Sit = false
 								end
 
-								task.wait(0.1)
+								task.wait()
 							end
 						end
 
@@ -2207,7 +2209,7 @@ TargetGroup:AddToggle("LoopKillToggleAll", {
 						end
 					end
 
-					task.wait(0.2)
+					task.wait(5)
 				end
 
 				restoreCollision()
@@ -2894,88 +2896,93 @@ TargetGroup:AddButton({
 			local RunService = game:GetService("RunService")
 			local Players = game:GetService("Players")
 			local GE = RS:WaitForChild("GrabEvents")
-
 			local myChar = Player.Character
 			local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
 			if not myRoot then return end
 
 			local savedPos = myRoot.CFrame
+			local lockOffset = CFrame.new(0, 17, 0)
 
+			-- Process ALL players at once
+			local coroutines = {}
 			for _, target in ipairs(Players:GetPlayers()) do
 				if target == Player then continue end
 
 				local inPlot = target:FindFirstChild("InPlot")
-				if inPlot and inPlot.Value == true then
-					continue
-				end
+				if inPlot and inPlot.Value == true then continue end
 
 				local tChar = target.Character
 				local tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")
 				local tHum = tChar and tChar:FindFirstChild("Humanoid")
 
-				if not (tRoot and tHum and tHum.Health > 0) then
-					continue
-				end
+				if tRoot and tHum and tHum.Health > 0 then
+					-- Create a coroutine for each player
+					table.insert(coroutines, coroutine.create(function()
+						local dragging = false
+						local grabStartTime = 0
+						local start = tick()
 
-				local dragging = false
-				local grabStartTime = 0
+						while tRoot.Parent and tHum.Health > 0 and tick() - start < 0.9 do
+							tRoot.AssemblyLinearVelocity = Vector3.zero
+							tRoot.AssemblyAngularVelocity = Vector3.zero
+							tRoot.Velocity = Vector3.zero
 
-				local start = tick()
-				while tRoot.Parent and tHum.Health > 0 and tick() - start < 0.9 do
-					tRoot.AssemblyLinearVelocity = Vector3.zero
-					tRoot.AssemblyAngularVelocity = Vector3.zero
-					tRoot.Velocity = Vector3.zero
+							if not dragging then
+								myRoot.CFrame = tRoot.CFrame
+								myRoot.Velocity = Vector3.zero
+								pcall(function()
+									tHum.PlatformStand = true
+									tHum.Sit = true
+									GE.SetNetworkOwner:FireServer(tRoot, CFrame.new(myRoot.Position, tRoot.Position))
+									GE.CreateGrabLine:FireServer(tRoot, Vector3.zero, tRoot.Position, false)
+								end)
 
-					if not dragging then
-						myRoot.CFrame = tRoot.CFrame
-						myRoot.Velocity = Vector3.zero
+								if grabStartTime == 0 then
+									grabStartTime = tick()
+								end
+								if tick() - grabStartTime > 0.35 then
+									dragging = true
+									grabStartTime = 0
+								end
+							else
+								myRoot.CFrame = savedPos
+								myRoot.Velocity = Vector3.zero
+								local lockPos = savedPos * lockOffset
+								tRoot.CFrame = lockPos
+								tRoot.Velocity = Vector3.zero
+								tRoot.RotVelocity = Vector3.zero
+								tHum.PlatformStand = true
+								tHum.Sit = false
+								pcall(function()
+									GE.SetNetworkOwner:FireServer(tRoot, lockPos)
+									GE.CreateGrabLine:FireServer(tRoot, Vector3.zero, tRoot.Position, false)
+								end)
+							end
 
-						pcall(function()
-							tHum.PlatformStand = true
-							tHum.Sit = true
-							GE.SetNetworkOwner:FireServer(tRoot, CFrame.new(myRoot.Position, tRoot.Position))
-							GE.CreateGrabLine:FireServer(tRoot, Vector3.zero, tRoot.Position, false)
-						end)
-
-						if grabStartTime == 0 then
-							grabStartTime = tick()
+							coroutine.yield()
 						end
 
-						if tick() - grabStartTime > 0.35 then
-							dragging = true
-							grabStartTime = 0
-						end
-					else
-						myRoot.CFrame = savedPos
-						myRoot.Velocity = Vector3.zero
-
-						local lockPos = savedPos * CFrame.new(0, 17, 0)
-
-						tRoot.CFrame = lockPos
-						tRoot.Velocity = Vector3.zero
-						tRoot.RotVelocity = Vector3.zero
-
-						tHum.PlatformStand = true
-						tHum.Sit = false
-
 						pcall(function()
-							GE.SetNetworkOwner:FireServer(tRoot, lockPos)
-							GE.CreateGrabLine:FireServer(tRoot, Vector3.zero, tRoot.Position, false)
+							tHum.PlatformStand = false
+							tHum.Sit = false
+							GE.DestroyGrabLine:FireServer(tRoot)
 						end)
-					end
-
-					RunService.Heartbeat:Wait()
+					end))
 				end
-
-				pcall(function()
-					tHum.PlatformStand = false
-					tHum.Sit = false
-					GE.DestroyGrabLine:FireServer(tRoot)
-				end)
-
-				task.wait(0.15)
 			end
 
+			-- Run all coroutines simultaneously each frame
+			while #coroutines > 0 do
+				for i = #coroutines, 1, -1 do
+					local success, err = coroutine.resume(coroutines[i])
+					if coroutine.status(coroutines[i]) == "dead" then
+						table.remove(coroutines, i)
+					end
+				end
+				RunService.Heartbeat:Wait()
+			end
+
+			-- Return to original position
 			if myRoot then
 				myRoot.CFrame = savedPos
 				myRoot.Velocity = Vector3.zero
