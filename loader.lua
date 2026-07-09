@@ -3806,7 +3806,7 @@ MiscGroup:AddToggle("TPToggle", {
 })
 
 MiscGroup:AddToggle("PlayerList", {
-	Text = "Show / Hide Playerlist.",
+	Text = "Playerlist Visible",
 	Default = false,
 	Callback = function(Value)
 		if Value then
