@@ -3937,7 +3937,7 @@ MiscGroup:AddSlider("PacketAmountSlider", {
 	Text = "Packet Lag",
 	Default = 100,
 	Min = 10,
-	Max = 100000,
+	Max = 500,
 	Rounding = 0,
 	Callback = function(Value)
 		PacketSpamAmount = Value
@@ -3977,7 +3977,7 @@ MiscGroup:AddSlider("LineLagAmount", {
 	Text = "Lines / Frame",
 	Default = 100,
 	Min = 1,
-	Max = 10000,
+	Max = 500,
 	Rounding = 0,
 	Callback = function(val)
 		LineSpamAmount = val
