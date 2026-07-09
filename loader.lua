@@ -1477,6 +1477,8 @@ PlayerView:AddSlider("SpinSpeed", {
 	Callback = function(Value) spinSpeed = Value end
 })
 
+
+
 -- Infinite Jump
 local infJump = false
 PlayerView:AddToggle("infJumpToggle", {
@@ -3614,6 +3616,125 @@ GrabGroup:AddToggle("MasslessGrabToggle", {
 		end
 	end
 })
+
+
+function IsMobile()
+	if LocalPlayer.PlayerGui:FindFirstChild("ContextActionGui") then
+		return true
+	end
+end
+
+function GetPlayerCharacter()
+	if LocalPlayer.Character and (LocalPlayer.Character:FindFirstChild("HumanoidRootPart") and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")) then
+		return LocalPlayer.Character
+	end
+end
+
+IncreaseLineExtend = 0
+
+UserInputService.InputChanged:Connect(function(inputObject)
+	if inputObject.UserInputType == Enum.UserInputType.MouseWheel then
+		if pcDistance < 11 then
+			pcDistance = 11
+		end
+		if inputObject.Position.Z <= 0 then
+			if inputObject.Position.Z < 0 then
+				pcDistance = pcDistance - IncreaseLineExtend
+			end
+		else
+			pcDistance = pcDistance + IncreaseLineExtend
+		end
+	end
+end)
+
+local workspaceService = game:GetService("Workspace")
+local extendconnection
+
+GrabGroup:AddToggle("ExtendToggle", {
+	Text = "Furthur Extend",
+	Default = false,
+	Callback = function(Value)
+		if Value then
+			
+				workspaceService.ChildAdded:Connect(function(potentialGrabPart)
+					if potentialGrabPart.Name == "GrabParts" and (potentialGrabPart:IsA("Model")) then
+					if Value and (UserInputService.MouseEnabled and not IsMobile()) then
+						
+						masslessConnection = workspace.ChildAdded:Connect(function(v)
+							if not masslessGrabEnabled then return end
+							if not (v:IsA("Model") and v.Name == "GrabParts") then return end
+
+							task.spawn(function()
+								task.wait(0.05)
+
+								local dragPart = v:FindFirstChild("DragPart")
+								if not dragPart then return end
+
+								local alignOri = dragPart:FindFirstChild("AlignOrientation")
+								local alignPos = dragPart:FindFirstChild("AlignPosition")
+								if not (alignOri and alignPos) then return end
+
+								local oriTorque = alignOri.MaxTorque
+								local oriOriResp = alignOri.Responsiveness
+								local oriForce = alignPos.MaxForce
+								local oriPosResp = alignPos.Responsiveness
+
+								while masslessGrabEnabled and v.Parent do
+									alignOri.MaxTorque = 1e46
+									alignOri.Responsiveness = 20099
+									alignPos.MaxForce = 1e51
+									alignPos.Responsiveness = 20099
+									task.wait(0.25)
+								end
+
+								if alignOri then
+									alignOri.MaxTorque = oriTorque
+									alignOri.Responsiveness = oriOriResp
+								end
+								if alignPos then
+									alignPos.MaxForce = oriForce
+									alignPos.Responsiveness = oriPosResp
+								end
+							end)
+						end)
+						
+							local grabPartModel = potentialGrabPart
+							GetPlayerCharacter()
+							local grabPartName = grabPartModel
+							grabPartModel.WaitForChild(grabPartName, "GrabPart")
+							local dragPartName = grabPartModel
+							grabPartModel.WaitForChild(dragPartName, "DragPart")
+							local dragPartClone = grabPartModel.DragPart:Clone()
+							dragPartClone.Name = "DragPart1"
+							dragPartClone.AlignPosition.Attachment1 = dragPartClone.DragAttach
+							dragPartClone.Parent = grabPartModel
+							pcDistance = (dragPartClone.Position - workspaceService.CurrentCamera.CFrame.Position).Magnitude
+							dragPartClone.AlignOrientation.Enabled = false
+							grabPartModel.DragPart.AlignPosition.Enabled = false
+							task.spawn(function()
+								while grabPartModel.Parent do
+									dragPartClone.Position = workspaceService.Camera.CFrame.Position + workspaceService.Camera.CFrame.LookVector * pcDistance
+									task.wait()
+								end
+								pcDistance = 0
+							end)
+						end
+					
+					end
+			end)
+		end
+	end
+})
+
+GrabGroup:AddSlider("extendvalue", {
+	Text = "Extend Amount",
+	Default = 5,
+	Min = 1,
+	Max = 50,
+	Rounding = 0,
+	Callback = function(Value) IncreaseLineExtend = Value end
+})
+
 
 -- Kill Grab
 local killGrabEnabled = false
