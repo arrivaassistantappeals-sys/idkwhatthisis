@@ -3564,7 +3564,13 @@ local function startMasslessGrab()
 		task.spawn(function()
 			task.wait(0.05)
 
-			local dragPart = v:FindFirstChild("DragPart")
+			local dragPart = v:FindFirstChild("DragPart1") or v:FindFirstChild("DragPart")
+			for i = 1, 10 do
+				dragPart = v:FindFirstChild("DragPart1") or v:FindFirstChild("DragPart")
+				if dragPart then break end
+				task.wait(0.05)
+			end
+			
 			if not dragPart then return end
 
 			local alignOri = dragPart:FindFirstChild("AlignOrientation")
@@ -3680,6 +3686,8 @@ GrabGroup:AddToggle("ExtendToggle", {
 							end
 							pcDistance = 0
 						end)
+						
+						
 					end
 					
 				end
