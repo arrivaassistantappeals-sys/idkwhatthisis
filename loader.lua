@@ -1,3 +1,186 @@
+-- Arriva Core Hub V1.4.5 - maintenance revision of the supplied hub.
+-- Packet/Line Lag flooders removed. Gameplay features retain their original scope.
+local Hub = {alive = true, connections = {}, threads = {}, cleanups = {}, ready = false}
+Hub.env = (getgenv and getgenv()) or shared
+if Hub.env.ArrivaCoreMaintenance then
+    pcall(Hub.env.ArrivaCoreMaintenance)
+end
+Hub.instances = setmetatable({}, {__mode = "k"})
+Hub.assetTargets = setmetatable({}, {__mode = "k"})
+function Hub.new(class, parent)
+    local instance = Instance.new(class)
+    Hub.instances[instance] = true
+    if parent then Hub.assetTargets[instance] = parent end
+    if parent then instance.Parent = parent end
+    return instance
+end
+Hub.propertyBackup = {}
+function Hub.backup(instance, properties)
+    local saved = Hub.propertyBackup[instance]
+    if not saved then saved = {}; Hub.propertyBackup[instance] = saved end
+    for _, property in ipairs(properties) do
+        if saved[property] == nil then saved[property] = instance[property] end
+    end
+end
+function Hub.restore(instance)
+    local saved = Hub.propertyBackup[instance]
+    if not saved then return end
+    for property, value in pairs(saved) do pcall(function() instance[property] = value end) end
+    Hub.propertyBackup[instance] = nil
+end
+Hub.nativeTask = task
+local task = setmetatable({}, {__index = Hub.nativeTask})
+function Hub.schedule(method, delay, callback, ...)
+    if not Hub.alive then return nil end
+    local args = table.pack(...)
+    local thread = coroutine.create(function()
+        local ok, err = xpcall(function() callback(table.unpack(args, 1, args.n)) end, debug.traceback)
+        Hub.threads[coroutine.running()] = nil
+        if not ok and Hub.alive then warn("[Arriva] " .. tostring(err)) end
+    end)
+    Hub.threads[thread] = true
+    if method == "delay" then Hub.nativeTask.delay(delay, thread)
+    else Hub.nativeTask[method](thread) end
+    return thread
+end
+function task.spawn(callback, ...) return Hub.schedule("spawn", nil, callback, ...) end
+function task.defer(callback, ...) return Hub.schedule("defer", nil, callback, ...) end
+function task.delay(delay, callback, ...) return Hub.schedule("delay", delay, callback, ...) end
+function Hub.connect(signal, callback)
+    local connection = signal:Connect(function(...)
+        if not Hub.alive then return end
+        local args = table.pack(...)
+        local thread = coroutine.running()
+        Hub.threads[thread] = true
+        local ok, err = xpcall(function() callback(table.unpack(args, 1, args.n)) end, debug.traceback)
+        Hub.threads[thread] = nil
+        if not ok and Hub.alive then warn("[Arriva callback] " .. tostring(err)) end
+    end)
+    Hub.connections[connection] = true
+    return connection
+end
+function Hub.cleanup(callback) table.insert(Hub.cleanups, callback) end
+function Hub.stop()
+    if not Hub.alive then return end
+    if Hub.ready and Hub.storage and Hub.saveManager then Hub.persistSettings() end
+    Hub.alive = false
+    for connection in pairs(Hub.connections) do pcall(function() connection:Disconnect() end) end
+    for thread in pairs(Hub.threads) do
+        if thread ~= coroutine.running() then pcall(Hub.nativeTask.cancel, thread) end
+    end
+    for i = #Hub.cleanups, 1, -1 do pcall(Hub.cleanups[i]) end
+    for instance in pairs(Hub.propertyBackup) do Hub.restore(instance) end
+    for instance in pairs(Hub.instances) do pcall(function() instance:Destroy() end) end
+    _G.AntiInputLag = false; _G.ShurikenAntiKick = false
+    table.clear(Hub.connections); table.clear(Hub.threads)
+    if Hub.env.ArrivaCoreMaintenance == Hub.unload then Hub.env.ArrivaCoreMaintenance = nil end
+end
+function Hub.fetch(url)
+    local ok, value = pcall(function()
+        local fn, err = loadstring(game:HttpGet(url))
+        assert(fn, err)
+        return fn()
+    end)
+    assert(ok, "[Arriva dependency] " .. url .. ": " .. tostring(value))
+    return value
+end
+-- SETTINGS PERSISTENCE CORE
+function Hub.canonical(value)
+    local kind = type(value)
+    if kind == "table" then
+        local entries = {}
+        for key, item in pairs(value) do
+            table.insert(entries, Hub.canonical(key) .. Hub.canonical(item))
+        end
+        table.sort(entries)
+        return "T" .. table.concat(entries, "|") .. ";"
+    end
+    local text = tostring(value)
+    return kind:sub(1, 1) .. #text .. ":" .. text
+end
+function Hub.captureSettings()
+    if not Hub.saveManager then return nil, "Save manager is unavailable" end
+    local ok, content, success, err = pcall(function() return Hub.saveManager:SaveJSON("AutoSave") end)
+    if not ok then return nil, tostring(content) end
+    if not success then return nil, tostring(err) end
+    local decoded, data = pcall(function() return game:GetService("HttpService"):JSONDecode(content) end)
+    if not decoded then return nil, tostring(data) end
+    data.timestamp = nil -- A clock change is not a settings change.
+    if type(data.objects) == "table" then
+        table.sort(data.objects, function(a, b)
+            return tostring(a.tabIdx or "") .. ":" .. tostring(a.idx) < tostring(b.tabIdx or "") .. ":" .. tostring(b.idx)
+        end)
+    end
+    return Hub.canonical(data)
+end
+function Hub.persistSettings()
+    if not Hub.storage or not Hub.saveManager then
+        Hub.lastSaveError = "File storage is unavailable"
+        return false, Hub.lastSaveError
+    end
+    local ok, success, err = pcall(function() return Hub.saveManager:Save("AutoSave") end)
+    if not ok or not success then
+        Hub.lastSaveError = tostring(ok and err or success)
+        return false, Hub.lastSaveError
+    end
+    Hub.lastSaveError = nil
+    Hub.lastSaveAt = os.date("%H:%M:%S")
+    Hub.lastSettings = Hub.captureSettings()
+    return true
+end
+function Hub.pollSettings()
+    if not Hub.ready or not Hub.storage then return end
+    local fingerprint, err = Hub.captureSettings()
+    if not fingerprint then
+        if Hub.lastSnapshotError ~= err then warn("[Arriva settings] " .. tostring(err)) end
+        Hub.lastSnapshotError = err
+        return
+    end
+    Hub.lastSnapshotError = nil
+    if fingerprint ~= Hub.lastSettings then
+        Hub.lastSettings = fingerprint
+        Hub.requestSave()
+    end
+end
+function Hub.requestSave()
+    if not Hub.ready or not Hub.storage then return end
+    if Hub.saveThread then pcall(Hub.nativeTask.cancel, Hub.saveThread); Hub.threads[Hub.saveThread] = nil end
+    Hub.saveThread = task.delay(1, function()
+        Hub.saveThread = nil
+        local ok, err = Hub.persistSettings()
+        if not ok then warn("[Arriva autosave] " .. tostring(err)) end
+    end)
+end
+function Hub.installConfigLoading(saveManager)
+    local original = saveManager.LoadJSON
+    saveManager:SetLoadingOrder(false)
+    saveManager.LoadJSON = function(self, content)
+        local ok, data = pcall(function() return game:GetService("HttpService"):JSONDecode(content) end)
+        if not ok or type(data) ~= "table" or type(data.objects) ~= "table" then
+            return original(self, content)
+        end
+        local function rank(option)
+            if option.idx == "ThemeManager_ThemeList" then return 0 end
+            if option.idx == "ThemeManager_CustomThemeList" then return 1 end
+            if option.type == "Dropdown" then return 10 end
+            if option.type == "Slider" or option.type == "Input" or option.type == "KeyPicker" then return 20 end
+            if option.type == "ColorPicker" then return 30 end
+            if option.idx == "WhitelistFriends" then return 35 end
+            if option.type == "Toggle" then return 40 end
+            return 25
+        end
+        table.sort(data.objects, function(a, b)
+            local ar, br = rank(a), rank(b)
+            if ar ~= br then return ar < br end
+            return tostring(a.idx) < tostring(b.idx)
+        end)
+        local encoded, result = pcall(function() return game:GetService("HttpService"):JSONEncode(data) end)
+        if not encoded then return false, tostring(result) end
+        return original(self, result)
+    end
+end
+-- END SETTINGS PERSISTENCE CORE
+
 --=====================================================
 -- ARRIVA CORE HUB – OWNER COMMAND CORE (ALWAYS FIRST)
 --=====================================================
@@ -14,7 +197,180 @@ local Workspace = workspace
 
 --// Player
 local LocalPlayer = Players.LocalPlayer
-local character = LocalPlayer.Character
+local character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+Hub.characterGeneration = 0
+Hub.connect(LocalPlayer.CharacterRemoving, function(oldCharacter)
+    Hub.characterGeneration += 1
+    if character == oldCharacter then character = nil end
+end)
+Hub.connect(LocalPlayer.CharacterAdded, function(newCharacter)
+    Hub.characterGeneration += 1
+    character = newCharacter
+end)
+
+-- SAFETY WHITELIST CORE (separate from the hub access whitelist)
+Hub.manualWhitelist = {}
+Hub.friendCache = {}
+Hub.friendChecks = {}
+Hub.characterOwners = setmetatable({}, {__mode = "k"})
+Hub.playerNames = {}
+function Hub.trackPlayerOwnership(player)
+    Hub.playerNames[player.Name] = player
+    if player.Character then Hub.characterOwners[player.Character] = player end
+    Hub.connect(player.CharacterAdded, function(char) Hub.characterOwners[char] = player end)
+end
+for _, player in ipairs(Players:GetPlayers()) do Hub.trackPlayerOwnership(player) end
+Hub.whitelistFriends = true
+Hub.safetyPath = "ArrivaCoreHub/SafetyWhitelist.json"
+function Hub.readSafety()
+    if not isfile or not readfile then return end
+    if not isfile(Hub.safetyPath) then
+        -- Migrate the old username labels before SaveManager can reject renamed dropdown values.
+        local legacy = "ArrivaCoreHub/Configs/settings/AutoSave.json"
+        if not isfile(legacy) then return end
+        local ok, data = pcall(function() return game:GetService("HttpService"):JSONDecode(readfile(legacy)) end)
+        if ok and type(data) == "table" and type(data.objects) == "table" then
+            for _, option in ipairs(data.objects) do
+                if option.idx == "MultiWhitelist" and type(option.value) == "table" then
+                    for label, selected in pairs(option.value) do
+                        if selected and type(label) == "string" then
+                            local id = label:match("%[(%d+)%]$")
+                            local name = label:match("%(@?([^()]*)%)$")
+                            local player = name and Players:FindFirstChild(name)
+                            if not id and player then id = tostring(player.UserId) end
+                            if id then Hub.manualWhitelist[id] = label
+                            elseif name then Hub.manualWhitelist["name:" .. name:lower()] = label end
+                        end
+                    end
+                end
+            end
+        end
+        return
+    end
+    local ok, data = pcall(function()
+        return game:GetService("HttpService"):JSONDecode(readfile(Hub.safetyPath))
+    end)
+    if ok and type(data) == "table" and type(data.manual) == "table" then
+        Hub.manualWhitelist = {}
+        for id, label in pairs(data.manual) do
+            if type(id) == "string" and type(label) == "string" then Hub.manualWhitelist[id] = label end
+        end
+    elseif not ok then warn("[Arriva whitelist] Could not read saved whitelist: " .. tostring(data)) end
+end
+Hub.readSafety()
+function Hub.saveSafety()
+    if not writefile or not makefolder or not isfolder then return end
+    local ok, err = pcall(function()
+        if not isfolder("ArrivaCoreHub") then makefolder("ArrivaCoreHub") end
+        writefile(Hub.safetyPath, game:GetService("HttpService"):JSONEncode({manual = Hub.manualWhitelist}))
+    end)
+    if not ok then warn("[Arriva whitelist] Could not save whitelist: " .. tostring(err)) end
+end
+function Hub.queueSafetySave()
+    if Hub.safetySaveThread then pcall(Hub.nativeTask.cancel, Hub.safetySaveThread); Hub.threads[Hub.safetySaveThread] = nil end
+    Hub.safetySaveThread = task.delay(0.5, function() Hub.safetySaveThread = nil; Hub.saveSafety() end)
+end
+function Hub.checkFriend(player)
+    if not player or player == LocalPlayer or Hub.friendChecks[player.UserId] then return end
+    local userId = player.UserId
+    Hub.friendChecks[userId] = true
+    task.spawn(function()
+        local ok, result = pcall(function() return LocalPlayer:IsFriendsWithAsync(userId) end)
+        Hub.friendCache[userId] = {friend = ok and result == true, failed = not ok, expires = os.clock() + (ok and 60 or 15)}
+        Hub.friendChecks[userId] = nil
+        if Hub.reconcileProtection then Hub.reconcileProtection() end
+        if not ok then warn("[Arriva whitelist] Friend lookup failed; target stays protected: " .. tostring(result)) end
+    end)
+end
+function Hub.isProtected(player)
+    if not player then return false end
+    if player == LocalPlayer then return true end
+    if Hub.manualWhitelist[tostring(player.UserId)] or Hub.manualWhitelist["name:" .. player.Name:lower()] then return true end
+    if not Hub.whitelistFriends then return false end
+    local state = Hub.friendCache[player.UserId]
+    if not state or state.expires <= os.clock() then
+        Hub.checkFriend(player)
+        state = Hub.friendCache[player.UserId]
+    end
+    -- Do not guess that someone is a nonfriend during a pending or failed lookup.
+    if Hub.friendChecks[player.UserId] or not state or state.failed then return true end
+    return state.friend
+end
+function Hub.canHarm(player)
+    return player ~= nil and player ~= LocalPlayer and player.Parent ~= nil and not Hub.isProtected(player)
+end
+function Hub.playerOf(instance)
+    if typeof(instance) ~= "Instance" then return nil end
+    if instance:IsA("Player") then return instance end
+    local current = instance
+    while current do
+        if current.Name == "GrabParts" and current:IsA("Model") then
+            local grab = current:FindFirstChild("GrabPart")
+            local weld = grab and grab:FindFirstChild("WeldConstraint")
+            if weld and weld.Part1 and not weld.Part1:IsDescendantOf(current) then
+                local attachedPlayer = Hub.playerOf(weld.Part1)
+                if attachedPlayer then return attachedPlayer end
+            end
+        end
+        if current:IsA("Model") then
+            local player = Players:GetPlayerFromCharacter(current) or Hub.characterOwners[current]
+            if player then return player end
+        end
+        if current.Parent == Workspace then
+            local name = current.Name:match("^(.-)SpawnedInToys$")
+            if name then return Players:FindFirstChild(name) or Hub.playerNames[name] end
+        end
+        current = current.Parent
+    end
+    -- GrabParts is outside the character, but its weld identifies the affected player.
+    local grab = instance.Name == "GrabParts" and instance:FindFirstChild("GrabPart")
+    local weld = grab and grab:FindFirstChild("WeldConstraint")
+    if weld and weld.Part1 and not weld.Part1:IsDescendantOf(instance) then return Hub.playerOf(weld.Part1) end
+    return nil
+end
+function Hub.canAffect(instance)
+    -- A drop remote can receive only a weld in our toy; inspect its attached character too.
+    if typeof(instance) == "Instance" and (instance:IsA("Weld") or instance:IsA("WeldConstraint")) then
+        if instance.Part0 and not Hub.canAffect(instance.Part0) then return false end
+        if instance.Part1 and not Hub.canAffect(instance.Part1) then return false end
+    end
+    local owner = Hub.playerOf(instance)
+    return not owner or owner == LocalPlayer or Hub.canHarm(owner)
+end
+function Hub.reconcileProtection()
+    for asset, target in pairs(Hub.assetTargets) do
+        if asset:IsA("BodyMover") or asset:IsA("BodyVelocity") or asset:IsA("BodyAngularVelocity") or asset:IsA("BodyGyro") then
+            if not Hub.canAffect(target) then pcall(function() asset:Destroy() end) end
+        end
+    end
+    for instance in pairs(Hub.propertyBackup) do
+        if not Hub.canAffect(instance) then Hub.restore(instance) end
+    end
+end
+function Hub.remoteAllowed(remote, ...)
+    if not remote or not Hub.canAffect(remote) then return false end
+    for index = 1, select("#", ...) do
+        if not Hub.canAffect(select(index, ...)) then return false end
+    end
+    return true
+end
+function Hub.fire(remote, ...)
+    if Hub.remoteAllowed(remote, ...) then remote:FireServer(...) end
+end
+function Hub.invoke(remote, ...)
+    if Hub.remoteAllowed(remote, ...) then return remote:InvokeServer(...) end
+    return nil
+end
+Hub.cleanup(function() if Hub.safetySaveThread then Hub.saveSafety() end end)
+Hub.connect(Players.PlayerAdded, function(player)
+    Hub.trackPlayerOwnership(player)
+    if Hub.whitelistFriends then Hub.checkFriend(player) end
+    if Hub.refreshWhitelistUI then task.defer(Hub.refreshWhitelistUI) end
+end)
+Hub.connect(Players.PlayerRemoving, function()
+    if Hub.refreshWhitelistUI then task.defer(Hub.refreshWhitelistUI) end
+end)
+-- END SAFETY WHITELIST CORE
 
 --// Owner
 local HUB_OWNER_ID = 1325117607
@@ -36,7 +392,7 @@ local WHITELIST = {
 }
 
 --// Whitelist check
-if WHITELIST[LocalPlayer.UserId] ~= LocalPlayer.Name then
+if WHITELIST[LocalPlayer.UserId] == nil then
 	LocalPlayer:Kick("Nah not today bruh. find ur own shit to use.")
 	return
 end
@@ -93,7 +449,7 @@ local function findTarget(targetStr)
 	-- Partial match (username or display name)
 	local matches = {}
 	for _, plr in ipairs(Players:GetPlayers()) do
-		if plr.Name:lower():find(targetStr) or plr.DisplayName:lower():find(targetStr) then
+		if plr.Name:lower():find(targetStr, 1, true) or plr.DisplayName:lower():find(targetStr, 1, true) then
 			table.insert(matches, plr)
 		end
 	end
@@ -208,46 +564,52 @@ local function processCommand(speaker, text)
 	end
 end
 
---// CHAT LISTENER (ROBUST – ALL CHANNELS)
+-- Owner commands: subscribe without replacing the game's chat formatting callback.
 if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
-	TextChatService.OnIncomingMessage = function(message)
-		if not message.TextSource then return end
-		local speaker = Players:GetPlayerByUserId(message.TextSource.UserId)
-		if speaker then
-			processCommand(speaker, message.Text)
-		end
-	end
+    Hub.connect(TextChatService.MessageReceived, function(message)
+        local speaker = message.TextSource and Players:GetPlayerByUserId(message.TextSource.UserId)
+        if speaker then processCommand(speaker, message.Text) end
+    end)
 else
-	-- Old chat fallback
-	local function hookPlayer(plr)
-		plr.Chatted:Connect(function(msg)
-			processCommand(plr, msg)
-		end)
-	end
-
-	for _, p in ipairs(Players:GetPlayers()) do
-		hookPlayer(p)
-	end
-	Players.PlayerAdded:Connect(hookPlayer)
+    local function hookPlayer(plr)
+        Hub.connect(plr.Chatted, function(msg) processCommand(plr, msg) end)
+    end
+    for _, player in ipairs(Players:GetPlayers()) do hookPlayer(player) end
+    Hub.connect(Players.PlayerAdded, hookPlayer)
 end
 
 print("Arriva Core Hub owner command core loaded")
 --=====================================================
 
 -- Main script continues
-loadstring(game:HttpGet('https://raw.githubusercontent.com/EdgeIY/infiniteyield/master/source'))()
+-- Infinite Yield is available from a manual button below; not auto-loaded.
 
 local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
-local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
-local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
-local SaveManager = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
+local Library = Hub.fetch(repo .. "Library.lua")
+local ThemeManager = Hub.fetch(repo .. "addons/ThemeManager.lua")
+local SaveManager = Hub.fetch(repo .. "addons/SaveManager.lua")
 
+Hub.library = Library
+Hub.connect(RunService.Heartbeat, function()
+    -- Snapshot SaveManager's complete supported schema, including keybinds, themes and UI state.
+    if not Hub.ready then return end
+    local now = os.clock()
+    if now < (Hub.nextSettingsCheck or 0) then return end
+    Hub.nextSettingsCheck = now + 0.5
+    for connection in pairs(Hub.connections) do if not connection.Connected then Hub.connections[connection] = nil end end
+    Hub.pollSettings()
+end)
+
+Hub.unload = function() Library:Unload() end
+Hub.env.ArrivaCoreMaintenance = Hub.unload
+Library:OnUnload(Hub.stop)
+Hub.saveManager = SaveManager
 local Options = Library.Options
 local Toggles = Library.Toggles
 Library.ForceCheckbox = false
 
 local Window = Library:CreateWindow({
-	Title = "Arriva Core Hub V1.4",
+	Title = "Arriva Core Hub V1.4.5",
 	Footer = "Made by Arriva",
 	NotifySide = "Right",
 	ShowCustomCursor = true,
@@ -268,18 +630,42 @@ local Tabs = {
 local Player = LocalPlayer -- Consistent naming
 local Camera = Workspace.CurrentCamera
 local CE = ReplicatedStorage:WaitForChild("CharacterEvents", 10)
-local BeingHeld = Player:WaitForChild("IsHeld", 10)
-local StruggleEvent = CE and CE:WaitForChild("Struggle")
-local characterEventsFolder = ReplicatedStorage:WaitForChild("CharacterEvents")
-local grabEventsFolder = ReplicatedStorage:WaitForChild("GrabEvents")
-local createGrabLineEvent = grabEventsFolder:WaitForChild("CreateGrabLine")
-local destroyGrabLineEvent = grabEventsFolder:WaitForChild("DestroyGrabLine")
-local setNetworkOwnerEvent = grabEventsFolder:WaitForChild("SetNetworkOwner")
-local extendGrabLineRemoteEvent = grabEventsFolder:WaitForChild("ExtendGrabLine")
-local ragdollRemoteEvent = characterEventsFolder:WaitForChild("RagdollRemote")
-local playerScriptsFolder = Player:WaitForChild("PlayerScripts")
-local anticreatelinelocalscript = playerScriptsFolder:WaitForChild("CharacterAndBeamMove")
-local spawnedInToysFolder = Workspace:WaitForChild(Player.Name .. "SpawnedInToys")
+local grabEventsFolder = ReplicatedStorage:WaitForChild("GrabEvents", 10)
+if not CE or not grabEventsFolder then
+    Library:Notify({Title = "Unsupported game", Description = "CharacterEvents / GrabEvents did not load within 10 seconds.", Time = 8})
+    Library:Unload()
+    return
+end
+local BeingHeld = Player:FindFirstChild("IsHeld")
+local StruggleEvent = CE:FindFirstChild("Struggle")
+local characterEventsFolder = CE
+local createGrabLineEvent = grabEventsFolder:FindFirstChild("CreateGrabLine")
+local destroyGrabLineEvent = grabEventsFolder:FindFirstChild("DestroyGrabLine")
+local setNetworkOwnerEvent = grabEventsFolder:FindFirstChild("SetNetworkOwner")
+local extendGrabLineRemoteEvent = grabEventsFolder:FindFirstChild("ExtendGrabLine")
+local ragdollRemoteEvent = CE:FindFirstChild("RagdollRemote")
+local playerScriptsFolder = Player:WaitForChild("PlayerScripts", 10)
+-- Anti Lag resolves and watches CharacterAndBeamMove when enabled; no cached startup reference.
+local spawnedInToysFolder = Workspace:FindFirstChild(Player.Name .. "SpawnedInToys")
+Hub.connect(Workspace.ChildAdded, function(child)
+    if child.Name == Player.Name .. "SpawnedInToys" then spawnedInToysFolder = child end
+end)
+Hub.cameraOriginal = {mode = Player.CameraMode, min = Player.CameraMinZoomDistance, max = Player.CameraMaxZoomDistance}
+Hub.cameraFOV = setmetatable({}, {__mode = "k"})
+Hub.connect(Workspace:GetPropertyChangedSignal("CurrentCamera"), function()
+    Camera = Workspace.CurrentCamera
+    if Camera and Options.FOVSlider then
+        Hub.cameraFOV[Camera] = Camera.FieldOfView
+        Camera.FieldOfView = Options.FOVSlider.Value
+    end
+end)
+Hub.cleanup(function()
+    Player.CameraMaxZoomDistance = math.max(Player.CameraMaxZoomDistance, Hub.cameraOriginal.max)
+    Player.CameraMinZoomDistance = Hub.cameraOriginal.min
+    Player.CameraMaxZoomDistance = Hub.cameraOriginal.max
+    Player.CameraMode = Hub.cameraOriginal.mode
+    for cam, value in pairs(Hub.cameraFOV) do pcall(function() cam.FieldOfView = value end) end
+end)
 
 -- Helper Functions
 local function notify(title, content, duration)
@@ -322,49 +708,37 @@ end
 -- Paint Parts Management
 local paintPartsBackup = {}
 local paintConnections = {}
+local function hidePaint(obj)
+    if not obj:IsA("BasePart") or obj.Name ~= "PaintPlayerPart" then return end
+    if not paintPartsBackup[obj] then
+        paintPartsBackup[obj] = {Transparency = obj.Transparency, CanTouch = obj.CanTouch, CanQuery = obj.CanQuery}
+    end
+    obj.Transparency = 1; obj.CanTouch = false; obj.CanQuery = false
+end
 local function deleteAllPaintParts()
-	for _, obj in ipairs(Workspace:GetDescendants()) do
-		if obj:IsA("BasePart") and obj.Name == "PaintPlayerPart" then
-			local clone = obj:Clone()
-			clone.Archivable = true
-			paintPartsBackup[obj:GetDebugId()] = { clone = clone, parent = obj.Parent }
-			obj:Destroy()
-		end
-	end
+    for _, obj in ipairs(Workspace:GetDescendants()) do hidePaint(obj) end
 end
-
 local function restorePaintParts()
-	for _, data in pairs(paintPartsBackup) do
-		if data.clone and data.parent then data.clone.Parent = data.parent end
-	end
-	paintPartsBackup = {}
+    for obj, props in pairs(paintPartsBackup) do
+        pcall(function() for property, value in pairs(props) do obj[property] = value end end)
+    end
+    table.clear(paintPartsBackup)
 end
-
 local function watchNewPaintParts()
-	table.insert(paintConnections, Workspace.DescendantAdded:Connect(function(obj)
-		if obj:IsA("BasePart") and obj.Name == "PaintPlayerPart" then
-			task.defer(function()
-				if obj and obj.Parent then
-					local clone = obj:Clone()
-					clone.Archivable = true
-					paintPartsBackup[obj:GetDebugId()] = { clone = clone, parent = obj.Parent }
-					obj:Destroy()
-				end
-			end)
-		end
-	end))
+    for _, connection in ipairs(paintConnections) do connection:Disconnect() end
+    table.clear(paintConnections)
+    table.insert(paintConnections, Hub.connect(Workspace.DescendantAdded, hidePaint))
 end
-
 local function disconnectWatchers()
-	for _, conn in ipairs(paintConnections) do if conn.Connected then conn:Disconnect() end end
-	paintConnections = {}
+    for _, connection in ipairs(paintConnections) do connection:Disconnect() end
+    table.clear(paintConnections)
 end
 
 local function setTouchQuery(state)
 	local char = Workspace:FindFirstChild(Player.Name)
 	if not char then return end
 	for _, v in ipairs(char:GetChildren()) do
-		if v:IsA("Part") or v:IsA("BasePart") then v.CanTouch = state v.CanQuery = state end
+		if v:IsA("Part") or v:IsA("BasePart") then if not state then Hub.backup(v, {"CanTouch", "CanQuery"}); v.CanTouch = false; v.CanQuery = false else Hub.restore(v) end end
 	end
 end
 
@@ -375,7 +749,7 @@ local restoreFrames = 0
 
 local function spawnBlobman()
 	local args = {[1] = "CreatureBlobman", [2] = CFrame.new(0, 5000000, 0), [3] = Vector3.new(0, 60, 0)}
-	pcall(function() ReplicatedStorage.MenuToys.SpawnToyRemoteFunction:InvokeServer(unpack(args)) end)
+	pcall(function() Hub.invoke(ReplicatedStorage.MenuToys.SpawnToyRemoteFunction, unpack(args)) end)
 	local folder = Workspace:WaitForChild(Player.Name.."SpawnedInToys", 5)
 	if folder and folder:FindFirstChild("CreatureBlobman") then
 		local blob = folder.CreatureBlobman
@@ -385,9 +759,13 @@ local function spawnBlobman()
 end
 
 local function startAntiGucci()
+    Hub.blobGeneration = (Hub.blobGeneration or 0) + 1
+    local generation = Hub.blobGeneration
+    if Hub.blobJump then Hub.blobJump:Disconnect(); Hub.blobJump = nil end
 	local character = Player.Character or Player.CharacterAdded:Wait()
-	local humanoid = character:WaitForChild("Humanoid")
-	local rootPart = character:WaitForChild("HumanoidRootPart")
+	local humanoid = character:WaitForChild("Humanoid", 5)
+	local rootPart = character:WaitForChild("HumanoidRootPart", 5)
+    if not humanoid or not rootPart or character ~= Player.Character or humanoid.Health <= 0 then return end
 	safePosition = rootPart.Position
 	local folder = Workspace:FindFirstChild(Player.Name.."SpawnedInToys")
 	local blob = folder and folder:FindFirstChild("CreatureBlobman")
@@ -401,12 +779,13 @@ local function startAntiGucci()
 		seat = blob and blob:FindFirstChild("VehicleSeat") 
 	end
 
-	if seat and seat:IsA("VehicleSeat") then 
+	if character ~= Player.Character or generation ~= Hub.blobGeneration then return end
+    if seat and seat:IsA("VehicleSeat") then 
 		rootPart.CFrame = seat.CFrame + Vector3.new(0, 2, 0) 
 		seat:Sit(humanoid) 
 	end
 
-	humanoid:GetPropertyChangedSignal("Jump"):Connect(function() 
+	Hub.blobJump = Hub.connect(humanoid:GetPropertyChangedSignal("Jump"), function() 
 		if humanoid.Jump and humanoid.Sit then 
 			restoreFrames = 60 
 			safePosition = rootPart.Position 
@@ -414,9 +793,13 @@ local function startAntiGucci()
 	end)
 
 	if antiGucciConnection then antiGucciConnection:Disconnect() end
-	antiGucciConnection = RunService.Heartbeat:Connect(function()
-		if not rootPart or not humanoid then return end
-		ReplicatedStorage.CharacterEvents.RagdollRemote:FireServer(rootPart, 0)
+	antiGucciConnection = Hub.connect(RunService.Heartbeat, function()
+		if character ~= Player.Character or not rootPart.Parent or not humanoid.Parent or humanoid.Health <= 0 or generation ~= Hub.blobGeneration then return end
+		local now = os.clock()
+        if ragdollRemoteEvent and now >= (Hub.blobNextRagdoll or 0) then
+            Hub.blobNextRagdoll = now + 0.1
+            Hub.fire(ragdollRemoteEvent, rootPart, 0)
+        end
 		if restoreFrames > 0 then 
 			rootPart.CFrame = CFrame.new(safePosition) 
 			restoreFrames = restoreFrames - 1 
@@ -424,15 +807,17 @@ local function startAntiGucci()
 	end)
 
 	task.spawn(function() 
-		while humanoid.Sit do 
+		while humanoid.Sit and humanoid.Parent and character == Player.Character and generation == Hub.blobGeneration do 
 			task.wait(1) 
 		end 
 		task.wait(1) 
-		rootPart.CFrame = CFrame.new(safePosition) 
+        if character == Player.Character and rootPart.Parent and generation == Hub.blobGeneration then rootPart.CFrame = CFrame.new(safePosition) end
 	end)
 end
 
 local function stopAntiGucci()
+    Hub.blobGeneration = (Hub.blobGeneration or 0) + 1
+    if Hub.blobJump then Hub.blobJump:Disconnect(); Hub.blobJump = nil end
 	if antiGucciConnection then 
 		antiGucciConnection:Disconnect() 
 		antiGucciConnection = nil 
@@ -449,11 +834,16 @@ local safePositionTrain
 local restoreFramesTrain = 0
 
 local function startAntiGucciTrain()
+    Hub.trainGeneration = (Hub.trainGeneration or 0) + 1
+    local generation = Hub.trainGeneration
+    if Hub.trainJump then Hub.trainJump:Disconnect(); Hub.trainJump = nil end
 	local character = Player.Character or Player.CharacterAdded:Wait()
-	local humanoid = character:WaitForChild("Humanoid")
-	local rootPart = character:WaitForChild("HumanoidRootPart")
+	local humanoid = character:WaitForChild("Humanoid", 5)
+	local rootPart = character:WaitForChild("HumanoidRootPart", 5)
+    if not humanoid or not rootPart or character ~= Player.Character or humanoid.Health <= 0 then return end
 	safePositionTrain = rootPart.Position
-	local folder = workspace.Map.AlwaysHereTweenedObjects
+	local map = workspace:FindFirstChild("Map")
+    local folder = map and map:FindFirstChild("AlwaysHereTweenedObjects")
 	local train = folder and folder:FindFirstChild("Train")
 	local seat
 
@@ -471,7 +861,7 @@ local function startAntiGucciTrain()
 		seat:Sit(humanoid) 
 	end
 
-	humanoid:GetPropertyChangedSignal("Jump"):Connect(function() 
+	Hub.trainJump = Hub.connect(humanoid:GetPropertyChangedSignal("Jump"), function() 
 		if humanoid.Jump and humanoid.Sit then 
 			restoreFramesTrain = 15 
 			safePositionTrain = rootPart.Position 
@@ -479,9 +869,13 @@ local function startAntiGucciTrain()
 	end)
 
 	if antiGucciConnectionTrain then antiGucciConnectionTrain:Disconnect() end
-	antiGucciConnectionTrain = RunService.Heartbeat:Connect(function()
-		if not rootPart or not humanoid then return end
-		ReplicatedStorage.CharacterEvents.RagdollRemote:FireServer(rootPart, 0)
+	antiGucciConnectionTrain = Hub.connect(RunService.Heartbeat, function()
+		if character ~= Player.Character or not rootPart.Parent or not humanoid.Parent or humanoid.Health <= 0 or generation ~= Hub.trainGeneration then return end
+		local now = os.clock()
+        if ragdollRemoteEvent and now >= (Hub.trainNextRagdoll or 0) then
+            Hub.trainNextRagdoll = now + 0.1
+            Hub.fire(ragdollRemoteEvent, rootPart, 0)
+        end
 		if restoreFramesTrain > 0 then 
 			rootPart.CFrame = CFrame.new(safePositionTrain) 
 			restoreFramesTrain = restoreFramesTrain - 1 
@@ -489,20 +883,38 @@ local function startAntiGucciTrain()
 	end)
 
 	task.spawn(function() 
-		while humanoid.Sit do 
+		while humanoid.Sit and humanoid.Parent and character == Player.Character and generation == Hub.trainGeneration do 
 			task.wait(1) 
 		end 
 		task.wait(0.5) 
-		rootPart.CFrame = CFrame.new(safePositionTrain) 
+        if character == Player.Character and rootPart.Parent and generation == Hub.trainGeneration then rootPart.CFrame = CFrame.new(safePositionTrain) end
 	end)
 end
 
 local function stopAntiGucciTrain()
+    Hub.trainGeneration = (Hub.trainGeneration or 0) + 1
+    if Hub.trainJump then Hub.trainJump:Disconnect(); Hub.trainJump = nil end
 	if antiGucciConnectionTrain then 
 		antiGucciConnectionTrain:Disconnect() 
 		antiGucciConnectionTrain = nil 
 	end
 end
+
+Hub.connect(Player.CharacterRemoving, function()
+    Hub.blobGeneration = (Hub.blobGeneration or 0) + 1
+    Hub.trainGeneration = (Hub.trainGeneration or 0) + 1
+    if antiGucciConnection then antiGucciConnection:Disconnect(); antiGucciConnection = nil end
+    if antiGucciConnectionTrain then antiGucciConnectionTrain:Disconnect(); antiGucciConnectionTrain = nil end
+    if Hub.blobJump then Hub.blobJump:Disconnect(); Hub.blobJump = nil end
+    if Hub.trainJump then Hub.trainJump:Disconnect(); Hub.trainJump = nil end
+end)
+Hub.connect(Player.CharacterAdded, function(char)
+    local root = char:WaitForChild("HumanoidRootPart", 5)
+    local hum = char:WaitForChild("Humanoid", 5)
+    if not root or not hum or Player.Character ~= char then return end
+    if Toggles.AutoGucciBlobToggle and Toggles.AutoGucciBlobToggle.Value then task.spawn(startAntiGucci) end
+    if Toggles.AutoGucciTrainToggle and Toggles.AutoGucciTrainToggle.Value then task.spawn(startAntiGucciTrain) end
+end)
 
 -- Defense Tab
 local DefenseGroup = Tabs.Defense:AddLeftGroupbox("Defense Main")
@@ -535,7 +947,7 @@ end
 local function anchorAll(char, state)
 	for _, p in ipairs(char:GetChildren()) do
 		if p:IsA("BasePart") then
-			p.Anchored = state
+			if state then Hub.backup(p, {"Anchored"}); p.Anchored = true else Hub.restore(p) end
 		end
 	end
 end
@@ -552,7 +964,7 @@ local function freezeChar(char)
 	hardFreeze = true
 
 	if freezeConn then freezeConn:Disconnect() end
-	freezeConn = RunService.Heartbeat:Connect(function()
+	freezeConn = Hub.connect(RunService.Heartbeat, function()
 		if hardFreeze and hrp then
 			hrp.AssemblyLinearVelocity = Vector3.zero
 			hrp.AssemblyAngularVelocity = Vector3.zero
@@ -576,38 +988,27 @@ end
 -- Core grab breaker
 --------------------------------------------------
 
+local grabGeneration = 0
 local function onGrabDetected()
-	if not antiGrabEnabled then return end
-
-	local char = Player.Character
-	if not char then return end
-
-	-- server-side struggle ASAP
-	pcall(function()
-		if Struggle then Struggle:FireServer(Player) end
-		if StopVelocity then StopVelocity:FireServer() end
-	end)
-
-	-- instant hard stop
-	anchorAll(char, true)
-	freezeChar(char)
-
-	-- wait ONLY while held
-	local isHeld = Player:FindFirstChild("IsHeld")
-	if isHeld then
-		local conn
-		conn = isHeld.Changed:Connect(function(v)
-			if v == false then
-				unfreezeChar(char)
-				if conn then conn:Disconnect() end
-			end
-		end)
-		table.insert(connections, conn)
-	else
-		task.delay(0.15, function()
-			unfreezeChar(char)
-		end)
-	end
+    if not antiGrabEnabled then return end
+    local char = Player.Character
+    if not char then return end
+    grabGeneration += 1
+    local generation = grabGeneration
+    pcall(function()
+        if Struggle then Hub.fire(Struggle, Player) end
+        if StopVelocity then Hub.fire(StopVelocity) end
+    end)
+    anchorAll(char, true)
+    freezeChar(char)
+    task.spawn(function()
+        local deadline = os.clock() + 2
+        repeat task.wait(0.05)
+            local held = Player:FindFirstChild("IsHeld")
+            if not held or not held.Value then break end
+        until not antiGrabEnabled or not char.Parent or os.clock() >= deadline or generation ~= grabGeneration
+        if generation == grabGeneration then unfreezeChar(char) end
+    end)
 end
 
 --------------------------------------------------
@@ -616,12 +1017,13 @@ end
 
 local function hookCharacter(char)
 	local head = char:WaitForChild("Head", 5)
+    if not antiGrabEnabled or Player.Character ~= char then return end
 	local hum = char:WaitForChild("Humanoid", 5)
 	if not (head and hum) then return end
 
 	-- detect grab instantly
 	table.insert(connections,
-		head.ChildAdded:Connect(function(child)
+		Hub.connect(head.ChildAdded, function(child)
 			if antiGrabEnabled and child.Name == "PartOwner" then
 				onGrabDetected()
 			end
@@ -630,7 +1032,7 @@ local function hookCharacter(char)
 
 	-- prevent non-blob seating
 	table.insert(connections,
-		hum.Changed:Connect(function(prop)
+		Hub.connect(hum.Changed, function(prop)
 			if prop == "Sit" and hum.Sit then
 				if not (hum.SeatPart and hum.SeatPart.Parent
 					and hum.SeatPart.Parent.Name == "CreatureBlobman") then
@@ -657,18 +1059,18 @@ DefenseGroup:AddToggle("AntiGrabObsidian", {
 	Text = "Anti Grab",
 	Default = false,
 	Callback = function(on)
-		SaveManager:Save("AutoSave")
-		SaveManager:Save("AutoSave")
+		Hub.requestSave()
 		antiGrabEnabled = on
 		disconnectAll()
+        unfreezeChar(Player.Character)
 
-		if on then
+			if on then
 			if Player.Character then
 				hookCharacter(Player.Character)
 			end
 
 			table.insert(connections,
-				Player.CharacterAdded:Connect(function(char)
+				Hub.connect(Player.CharacterAdded, function(char)
 					task.wait(0.1)
 					hookCharacter(char)
 				end)
@@ -680,31 +1082,44 @@ DefenseGroup:AddToggle("AntiGrabObsidian", {
 })
 
 
+Hub.blobParts = {}
 local function anti(Descendant)
-	if Descendant:FindFirstChild("LeftDetector") and Descendant:FindFirstChild("RightDetector") then
-		Descendant:WaitForChild("LeftDetector"):WaitForChild("LeftAlignOrientation").Enabled = false
-		Descendant:WaitForChild("LeftDetector"):WaitForChild("LeftWeld").Enabled = false
-		Descendant:WaitForChild("RightDetector"):WaitForChild("RightAlignOrientation").Enabled = false
-		Descendant:WaitForChild("RightDetector"):WaitForChild("RightWeld").Enabled = false
-		Descendant:WaitForChild("LeftDetector"):Destroy()
-		Descendant:WaitForChild("RightDetector"):Destroy()
-	end
+    for _, name in ipairs({"LeftDetector", "RightDetector"}) do
+        local detector = Descendant:FindFirstChild(name)
+        if detector then
+            if detector:IsA("BasePart") then
+                Hub.blobParts[detector] = true
+                Hub.backup(detector, {"CanTouch", "CanCollide"})
+                detector.CanTouch = false; detector.CanCollide = false
+            end
+            for _, constraint in ipairs(detector:GetDescendants()) do
+                if constraint:IsA("Constraint") then
+                    Hub.blobParts[constraint] = true
+                    Hub.backup(constraint, {"Enabled"})
+                    constraint.Enabled = false
+                end
+            end
+        end
+    end
 end
 
 local antiBlob1T=false
+local antiBlobWatcher
 local function antiBlob1F()
 	antiBlob1T=true
 
 	if antiBlob1T then
 		for _, Descendant in pairs(workspace:GetDescendants()) do
-			if Descendant.Name == "CreatureBlobman" and Descendant.Parent ~= spawnedInToysFolder then
+			if Descendant.Name == "CreatureBlobman" and Descendant.Parent ~= Workspace:FindFirstChild(Player.Name .. "SpawnedInToys") then
 				anti(Descendant)
 			end
 		end
 
-		workspace.DescendantAdded:Connect(function(Descendant)
-			if Descendant.Name == "CreatureBlobman" and Descendant.Parent ~= spawnedInToysFolder then
-				wait(0.1)
+		if antiBlobWatcher then antiBlobWatcher:Disconnect() end
+        antiBlobWatcher = Hub.connect(workspace.DescendantAdded, function(Descendant)
+			if antiBlob1T and Descendant.Name == "CreatureBlobman" and Descendant.Parent ~= Workspace:FindFirstChild(Player.Name .. "SpawnedInToys") then
+				task.wait(0.1)
+                if not antiBlob1T then return end
 				anti(Descendant)
 			end
 		end)
@@ -715,133 +1130,101 @@ DefenseGroup:AddToggle("AntiBlobmanToggle", {
 	Text="Anti Blobman", 
 	Default=false,
 	Callback=function(on)
-		SaveManager:Save("AutoSave")
-		if on then antiBlob1F() else antiBlob1T=false end
+		Hub.requestSave()
+		if on then antiBlob1F()
+        else
+            antiBlob1T = false
+            if antiBlobWatcher then antiBlobWatcher:Disconnect(); antiBlobWatcher = nil end
+            for obj in pairs(Hub.blobParts or {}) do Hub.restore(obj) end
+            Hub.blobParts = {}
+        end
 	end
 })
 
 local antiExplodeT=false
+local antiExplodeConnection
 local function antiExplodeF()
-	antiExplodeT=true
-	local char=Player.Character
-	if not char then return end
-	local hrp=char:WaitForChild("HumanoidRootPart")
-	workspace.ChildAdded:Connect(function(model)
-		if model.Name=="Part" and antiExplodeT then
-			local mag=(model.Position-hrp.Position).Magnitude
-			if mag<=20 then
-				hrp.Anchored=true
-				wait(0.01)
-				while char["Right Arm"].RagdollLimbPart.CanCollide do wait(0.001) end
-				hrp.Anchored=false
-			end
-		end
-	end)
+    antiExplodeT = true
+    if antiExplodeConnection then antiExplodeConnection:Disconnect() end
+    antiExplodeConnection = Hub.connect(workspace.ChildAdded, function(model)
+        if not antiExplodeT or not model:IsA("BasePart") or model.Name ~= "Part" then return end
+        local char = Player.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if not hrp or (model.Position - hrp.Position).Magnitude > 20 then return end
+        local original = hrp.Anchored
+        hrp.Anchored = true
+        task.delay(0.15, function() if hrp.Parent then hrp.Anchored = original end end)
+        Hub.explosionAnchor = {hrp, original}
+    end)
 end
+Hub.cleanup(function()
+    if Hub.explosionAnchor then Hub.explosionAnchor[1].Anchored = Hub.explosionAnchor[2] end
+end)
 
 DefenseGroup:AddToggle("AntiExplosionToggle", {
 	Text="Anti Explosion", 
 	Default=false,
 	Callback=function(on)
-		SaveManager:Save("AutoSave")
-		if on then antiExplodeF() else antiExplodeT=false end
+		Hub.requestSave()
+		if on then antiExplodeF() else antiExplodeT=false; if antiExplodeConnection then antiExplodeConnection:Disconnect(); antiExplodeConnection=nil end end
 	end
 })
 
--- Anti-Burn System (FINAL / PERSISTENT)
-local extinguisher = workspace.Map.Hole.PoisonBigHole.ExtinguishPart
-extinguisher.Size = Vector3.new(0.5, 0.5, 0.5)
-extinguisher.Transparency = 1
-if extinguisher:FindFirstChild("Tex") then
-	extinguisher.Tex.Transparency = 1
-end
-
+do
+-- Anti Burn: late-spawned fire parts, bounded retries, no startup map mutation.
 local antiBurnEnabled = false
 local burnThreadToken = 0
-
+local function getExtinguisher()
+    local map = workspace:FindFirstChild("Map")
+    local hole = map and map:FindFirstChild("Hole")
+    local poison = hole and hole:FindFirstChild("PoisonBigHole")
+    return poison and poison:FindFirstChild("ExtinguishPart")
+end
 local function hookBurn(char)
-	burnThreadToken += 1
-	local token = burnThreadToken
+    burnThreadToken += 1
+    local token = burnThreadToken
+    task.spawn(function()
+        while antiBurnEnabled and char.Parent and token == burnThreadToken do
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            local root = char:FindFirstChild("HumanoidRootPart")
+            local firePart = root and root:FindFirstChild("FirePlayerPart")
+            local debounce = hum and hum:FindFirstChild("FireDebounce") or firePart and firePart:FindFirstChild("FireDebounce")
+            local extinguisher = getExtinguisher()
+            if debounce and debounce.Value and firePart and extinguisher then
+                Hub.burnOriginal = Hub.burnOriginal or {part = extinguisher, cf = extinguisher.CFrame}
+                extinguisher.CFrame = firePart.CFrame
+                if firetouchinterest then
+                    pcall(firetouchinterest, firePart, extinguisher, 0)
+                    task.wait(0.05)
+                    pcall(firetouchinterest, firePart, extinguisher, 1)
+                end
+            end
+            task.wait(0.2)
+        end
+    end)
+end
+local function restoreBurn()
+    burnThreadToken += 1
+    if Hub.burnOriginal then
+        pcall(function() Hub.burnOriginal.part.CFrame = Hub.burnOriginal.cf end)
+        Hub.burnOriginal = nil
+    end
+end
+Hub.cleanup(restoreBurn)
+Hub.connect(Player.CharacterAdded, function(char) if antiBurnEnabled then hookBurn(char) end end)
+DefenseGroup:AddToggle("AntiBurnToggle", {Text = "Anti Burn", Default = false,
+    Callback = function(on)
+        antiBurnEnabled = on
+        Hub.requestSave()
+        if on then
+            if not getExtinguisher() then notify("Anti Burn", "Extinguisher not found in this map.", 5) end
+            if Player.Character then hookBurn(Player.Character) end
+        else restoreBurn() end
+    end})
 
-	local hum = char:WaitForChild("Humanoid")
-	local hrp = char:WaitForChild("HumanoidRootPart")
-	local firePart = hrp:WaitForChild("FirePlayerPart")
-
-	-- FireDebounce can live in two places
-	local function getFireDebounce()
-		return hum:FindFirstChild("FireDebounce")
-			or firePart:FindFirstChild("FireDebounce")
-	end
-
-	task.spawn(function()
-		while antiBurnEnabled and hum.Parent and burnThreadToken == token do
-			local fireDebounce = getFireDebounce()
-
-			if fireDebounce and fireDebounce.Value == true then
-				-- extinguish
-				extinguisher.CFrame =
-					firePart.CFrame
-					* CFrame.new(
-						math.random(-1, 1),
-						math.random(-1, 1),
-						math.random(-1, 1)
-					)
-
-				if firetouchinterest then
-					firetouchinterest(firePart, extinguisher, 0)
-					task.wait(0.05)
-					firetouchinterest(firePart, extinguisher, 1)
-				else
-					warn("Executor does not support firetouchinterest!")
-				end
-
-				-- kill visuals + sounds
-				for _, obj in ipairs(firePart:GetDescendants()) do
-					if obj:IsA("Sound") then
-						obj:Stop()
-					elseif obj:IsA("ParticleEmitter") or obj:IsA("Light") then
-						obj.Enabled = false
-					end
-				end
-
-				-- wait for server to reset naturally
-				repeat
-					task.wait(0.05)
-				until not fireDebounce.Value or not antiBurnEnabled
-			end
-
-			task.wait(0.1)
-		end
-	end)
 end
 
--- Respawn support
-Player.CharacterAdded:Connect(function(char)
-	if antiBurnEnabled then
-		task.wait(0.1)
-		hookBurn(char)
-	end
-end)
-
--- UI toggle
-DefenseGroup:AddToggle("AntiBurnToggle", {
-	Text = "Anti Burn",
-	Default = false,
-	Callback = function(on)
-		SaveManager:Save("AutoSave")
-		SaveManager:Save("AutoSave")
-		antiBurnEnabled = on
-		if on then
-			if Player.Character then
-				hookBurn(Player.Character)
-			end
-		else
-			-- invalidate running threads
-			burnThreadToken += 1
-		end
-	end
-})
-
+do
 -- Anti-Void
 local antiVoidConn
 local VOID_THRESHOLD = -50
@@ -851,10 +1234,10 @@ DefenseGroup:AddToggle("AntiVoidToggle", {
 	Text = "Anti Void",
 	Default = false,
 	Callback = function(on)
-		SaveManager:Save("AutoSave")
+		Hub.requestSave()
 		if on then
 			if antiVoidConn then antiVoidConn:Disconnect() end
-			antiVoidConn = RunService.Heartbeat:Connect(function()
+			antiVoidConn = Hub.connect(RunService.Heartbeat, function()
 				local char = Player.Character
 				if char and char.PrimaryPart then
 					local pos = char.PrimaryPart.Position
@@ -871,6 +1254,8 @@ DefenseGroup:AddToggle("AntiVoidToggle", {
 	end
 })
 
+end
+
 -- Anti-Sticky
 local antiStickyT = false
 DefenseGroup:AddToggle("AntiStickyToggle", {
@@ -879,7 +1264,9 @@ DefenseGroup:AddToggle("AntiStickyToggle", {
 	Callback = function(Value)
 		antiStickyT = Value
 		if Player.PlayerScripts:FindFirstChild("StickyPartsTouchDetection") then
-			Player.PlayerScripts.StickyPartsTouchDetection.Disabled = Value
+			local script = Player.PlayerScripts.StickyPartsTouchDetection
+            if Value then Hub.backup(script, {"Disabled"}); script.Disabled = true
+            else Hub.restore(script) end
 		end
 	end,
 })
@@ -889,29 +1276,120 @@ local function isFromLocalPlayer(inst)
 	return Player.Character and inst:IsDescendantOf(Player.Character)
 end
 
-local function removeExistingLines()
-	for _, v in ipairs(workspace:GetDescendants()) do
-		if v:IsA("Beam") or v.Name:lower():find("line") then
-			if not isFromLocalPlayer(v) then
-				pcall(function()
-					v:Destroy()
-				end)
-			end
-		end
-	end
+do
+-- Anti Lag: continuously disable the actual line script and prune foreign beams locally.
+local state = {on = false, generation = 0, scripts = {}, scriptConnections = {}, listeners = {}, removed = 0}
+Hub.antiLag = state
+local function listen(signal, callback)
+    -- Avoid the general callback wrapper on the potentially flooded Workspace signal.
+    local connection = signal:Connect(callback)
+    state.listeners[connection] = true
+    Hub.connections[connection] = true
+    return connection
 end
-
+local function isOwnBeam(obj)
+    local char = Player.Character
+    if char and obj:IsDescendantOf(char) then return true end
+    local toys = Workspace:FindFirstChild(Player.Name .. "SpawnedInToys")
+    if toys and obj:IsDescendantOf(toys) then return true end
+    local current = obj.Parent
+    while current and current ~= Workspace do
+        if current.Name == "GrabParts" and current.Parent == Workspace then return true end
+        current = current.Parent
+    end
+    return false
+end
+local function pruneBeam(obj)
+    if not state.on or not obj:IsA("Beam") or not obj.Parent or isOwnBeam(obj) then return end
+    local ok = pcall(function() obj:Destroy() end)
+    if ok then state.removed += 1 end
+end
+local function enforceScript(script)
+    if not state.on or not script:IsA("LocalScript") or script.Name ~= "CharacterAndBeamMove" then return end
+    if state.scripts[script] == nil then
+        state.scripts[script] = script.Disabled
+        local disabledConnection = listen(script:GetPropertyChangedSignal("Disabled"), function()
+            if state.on and script.Parent and not script.Disabled then script.Disabled = true end
+        end)
+        local destroyingConnection = listen(script.Destroying, function()
+            state.scripts[script] = nil
+            for _, connection in ipairs(state.scriptConnections[script] or {}) do
+                connection:Disconnect(); state.listeners[connection] = nil; Hub.connections[connection] = nil
+            end
+            state.scriptConnections[script] = nil
+        end)
+        state.scriptConnections[script] = {disabledConnection, destroyingConnection}
+    end
+    if not script.Disabled then script.Disabled = true end
+end
+local function scanScripts(container)
+    if not container or not state.on then return end
+    for _, obj in ipairs(container:GetDescendants()) do enforceScript(obj) end
+end
+local function restore()
+    state.on = false
+    state.generation += 1
+    for connection in pairs(state.listeners) do
+        connection:Disconnect()
+        Hub.connections[connection] = nil
+    end
+    table.clear(state.listeners)
+    for script, disabled in pairs(state.scripts) do
+        pcall(function() if script.Parent then script.Disabled = disabled end end)
+    end
+    table.clear(state.scripts)
+    table.clear(state.scriptConnections)
+    state.characterConnection = nil
+end
+local function hookCharacter(char)
+    if state.characterConnection then
+        state.characterConnection:Disconnect()
+        state.listeners[state.characterConnection] = nil
+        Hub.connections[state.characterConnection] = nil
+    end
+    scanScripts(char)
+    state.characterConnection = listen(char.DescendantAdded, enforceScript)
+end
+local function enable()
+    restore()
+    state.on = true
+    local generation = state.generation
+    -- Attach watchers before scanning, so late scripts and beams are not missed.
+    listen(Player.DescendantAdded, function(obj)
+        enforceScript(obj)
+        if obj:IsA("PlayerScripts") then scanScripts(obj) end
+    end)
+    listen(Player.CharacterAdded, hookCharacter)
+    listen(Workspace.DescendantAdded, pruneBeam)
+    scanScripts(Player:FindFirstChildOfClass("PlayerScripts"))
+    if Player.Character then hookCharacter(Player.Character) end
+    task.spawn(function()
+        for index, obj in ipairs(Workspace:GetDescendants()) do
+            if not state.on or generation ~= state.generation then return end
+            pruneBeam(obj)
+            if index % 200 == 0 then task.wait() end
+        end
+    end)
+end
+Hub.cleanup(restore)
 DefenseGroup:AddToggle("AntiLagToggle", {
-	Text = "Anti Lag",
-	Default = false,
-	Callback = function(Value)
-		anticreatelinelocalscript.Disabled = Value
-
-		if Value then
-			removeExistingLines()
-		end
-	end,
+    Text = "Anti Lag", Default = false,
+    Callback = function(on)
+        if on then enable() else restore() end
+        Hub.requestSave()
+    end,
 })
+DefenseGroup:AddButton({Text = "Anti Lag status", Func = function()
+    local scripts, disabled = 0, 0
+    for script in pairs(state.scripts) do
+        if script.Parent then scripts += 1; if script.Disabled then disabled += 1 end end
+    end
+    local message = string.format("%s | Line scripts disabled: %d/%d | Foreign beams removed: %d",
+        state.on and "On" or "Off", disabled, scripts, state.removed)
+    if state.on and scripts == 0 then message ..= " | CharacterAndBeamMove not found yet; watching for it." end
+    notify("Anti Lag", message, 8)
+end})
+end
 
 -- Extra Defense Toggles
 DefenseExtra:AddToggle("PaintDeleteToggle", {
@@ -1038,6 +1516,10 @@ DefenseExtra:AddToggle("AntiInputLag", {
 				local SpawnRemote = ReplicatedStorage.MenuToys.SpawnToyRemoteFunction
 
 				while _G.AntiInputLag do
+                    task.wait(0.15)
+                    char = plr.Character
+                    hrp = char and char:FindFirstChild("HumanoidRootPart")
+                    if not hrp then continue end
 					local toysFolder = Workspace:FindFirstChild(plr.Name.."SpawnedInToys")
 					local burger = toysFolder and toysFolder:FindFirstChild(ToyName)
 
@@ -1045,7 +1527,7 @@ DefenseExtra:AddToggle("AntiInputLag", {
 						task.spawn(function()
 							pcall(function()
 								local spawnCF = hrp.CFrame * CFrame.new(0, 5, 0)
-								SpawnRemote:InvokeServer(ToyName, spawnCF, Vector3.new(0,0,0))
+								Hub.invoke(SpawnRemote, ToyName, spawnCF, Vector3.new(0,0,0))
 							end)
 						end)
 
@@ -1064,17 +1546,17 @@ DefenseExtra:AddToggle("AntiInputLag", {
 
 							if holdingPlayer and holdingPlayer ~= plr then
 								pcall(function()
-									holdPart.DropItemRemoteFunction:InvokeServer(burger, hrp.CFrame * CFrame.new(0, 2000, 0), Vector3.new(0,0,0))
+									Hub.invoke(holdPart.DropItemRemoteFunction, burger, hrp.CFrame * CFrame.new(0, 2000, 0), Vector3.new(0,0,0))
 								end)
-								burger:Destroy()
+								if Hub.canAffect(burger) then burger:Destroy() end
 							else
 								pcall(function()
-									holdPart.HoldItemRemoteFunction:InvokeServer(burger, char)
+									Hub.invoke(holdPart.HoldItemRemoteFunction, burger, char)
 								end)
 								task.wait()
 
 								pcall(function()
-									holdPart.DropItemRemoteFunction:InvokeServer(burger, hrp.CFrame * CFrame.new(0, 2000, 0), Vector3.new(0,0,0))
+									Hub.invoke(holdPart.DropItemRemoteFunction, burger, hrp.CFrame * CFrame.new(0, 2000, 0), Vector3.new(0,0,0))
 								end)
 								task.wait()
 							end
@@ -1103,7 +1585,7 @@ DefenseExtra:AddToggle("ShurikenAntiKick", {
 			if inv and destroyrem then
 				for _, v in pairs(inv:GetChildren()) do
 					if v.Name == "AntiKick" or v.Name == "NinjaShuriken" then
-						pcall(function() destroyrem:FireServer(v) end)
+						pcall(function() Hub.fire(destroyrem, v) end)
 					end
 				end
 			end
@@ -1153,26 +1635,26 @@ DefenseExtra:AddToggle("ShurikenAntiKick", {
 
 					if kunai:FindFirstChild("SoundPart") then
 						if not kunai.SoundPart:FindFirstChild("PartOwner") or kunai.SoundPart.PartOwner.Value ~= plr.Name then 
-							setOwner:FireServer(kunai.SoundPart, kunai.SoundPart.CFrame)
+							Hub.fire(setOwner, kunai.SoundPart, kunai.SoundPart.CFrame)
 						end
 					end
 
 					local firePart = currentHRP:FindFirstChild("FirePlayerPart") or currentHRP:WaitForChild("FirePlayerPart", 5)
 					if firePart then
-						stickyEvent:FireServer(kunai.StickyPart, firePart, CFrame.new(0,0,0) * CFrame.Angles(0,math.rad(90),math.rad(90)))
+						Hub.fire(stickyEvent, kunai.StickyPart, firePart, CFrame.new(0,0,0) * CFrame.Angles(0,math.rad(90),math.rad(90)))
 					end
 
 					for _, obj in pairs(kunai:GetChildren()) do
 						if obj.Name == "Pyramid" then
 							obj.CanTouch = false; obj.CanCollide = false; obj.CanQuery = false; obj.Transparency = 0
 							if not obj:FindFirstChild("Highlight") then
-								local high = Instance.new("Highlight", obj)
+								local high = Hub.new("Highlight", obj)
 								high.FillColor = Color3.fromRGB(0, 0, 0)
 							end
 						elseif obj.Name == "Main" then
 							obj.CanTouch = false; obj.CanCollide = false; obj.CanQuery = false; obj.Transparency = 0
 							if not obj:FindFirstChild("Highlight") then
-								local high = Instance.new("Highlight", obj)
+								local high = Hub.new("Highlight", obj)
 								high.FillColor = Color3.fromRGB(255, 255, 255)
 							end
 						elseif obj:IsA("BasePart") then
@@ -1192,7 +1674,7 @@ DefenseExtra:AddToggle("ShurikenAntiKick", {
 					if currentHRP then
 						task.spawn(function()
 							pcall(function()
-								spawnRemote:InvokeServer(name, currentHRP.CFrame * CFrame.new(0, 12, 20), Vector3.new(0,0,0))
+								Hub.invoke(spawnRemote, name, currentHRP.CFrame * CFrame.new(0, 12, 20), Vector3.new(0,0,0))
 							end)
 						end)
 					end
@@ -1274,32 +1756,41 @@ DefenseExtra:AddToggle("ShurikenAntiKick", {
 	end
 })
 
--- Loop TP
+do
+-- Loop TP: one worker, current-character lookup, reversible PlatformStand.
 local tpActive = false
-DefenseExtra:AddToggle("LoopTP", {
-	Text = "Loop TP",
-	Default = false,
-	Callback = function(Value)
-		tpActive = Value
-		local char = Player.Character or Player.CharacterAdded:Wait()
-		local hrp = char:WaitForChild("HumanoidRootPart")
-		local hum = char:FindFirstChildOfClass("Humanoid")
-		if Value then
-			if hum then hum.PlatformStand = true end
-			task.spawn(function()
-				while tpActive and hrp do
-					local x = math.random(-500, 500)
-					local y = math.random(30, 480)
-					local z = math.random(-500, 500)
-					hrp.CFrame = CFrame.new(x, y, z)
-					task.wait(0.03)
-				end
-			end)
-		else
-			if hum then hum.PlatformStand = false end
-		end
-	end,
-})
+local tpGeneration = 0
+local affectedHumanoids = {}
+local function restoreTP()
+    for humanoid, original in pairs(affectedHumanoids) do
+        pcall(function() humanoid.PlatformStand = original end)
+    end
+    table.clear(affectedHumanoids)
+end
+Hub.cleanup(restoreTP)
+DefenseExtra:AddToggle("LoopTP", {Text = "Loop TP", Default = false,
+    Callback = function(on)
+        tpActive = on
+        tpGeneration += 1
+        local generation = tpGeneration
+        restoreTP()
+        if on then task.spawn(function()
+            while tpActive and generation == tpGeneration do
+                local current = Player.Character
+                local root = current and current:FindFirstChild("HumanoidRootPart")
+                local hum = current and current:FindFirstChildOfClass("Humanoid")
+                if root and hum and hum.Health > 0 then
+                    if affectedHumanoids[hum] == nil then affectedHumanoids[hum] = hum.PlatformStand end
+                    hum.PlatformStand = true
+                    root.CFrame = CFrame.new(math.random(-500, 500), math.random(30, 480), math.random(-500, 500))
+                end
+                task.wait(0.03)
+            end
+        end) end
+        Hub.requestSave()
+    end})
+Hub.connect(Player.CharacterRemoving, restoreTP)
+end
 
 -- Auto Attacker
 local AutoAttacker = false
@@ -1309,6 +1800,7 @@ DefenseExtra:AddToggle("AutoAttacker", {
 	Default = false,
 	Callback = function(Value)
 		AutoAttacker = Value
+        if Value and Hub.scanAttacker then Hub.scanAttacker() end
 	end
 })
 
@@ -1326,6 +1818,7 @@ function lookAt(startPosition, targetPosition)
 end
 
 function SNOWshipPermanentPlayer(otherPlayer, callbackFunction)
+    if not Hub.canHarm(otherPlayer) then return false end
 	if Player.Character and (Player.Character:FindFirstChild("HumanoidRootPart") and (typeof(otherPlayer) == "Instance" and (otherPlayer:IsA("Player") and otherPlayer.Character)) and (otherPlayer.Character:FindFirstChild("HumanoidRootPart") and otherPlayer.Character.HumanoidRootPart:FindFirstChild("FirePlayerPart"))) then
 		local firePlayerPart = otherPlayer.Character.HumanoidRootPart.FirePlayerPart
 		local distanceFromFirePlayerPart = Player:DistanceFromCharacter(firePlayerPart.Position)
@@ -1333,13 +1826,14 @@ function SNOWshipPermanentPlayer(otherPlayer, callbackFunction)
 			callbackFunction()
 		end
 		if distanceFromFirePlayerPart <= 30 then
-			setNetworkOwnerEvent:FireServer(firePlayerPart, lookAt(Player.Character.HumanoidRootPart.Position, firePlayerPart.Position))
+			Hub.fire(setNetworkOwnerEvent, firePlayerPart, lookAt(Player.Character.HumanoidRootPart.Position, firePlayerPart.Position))
 			return true
 		end
 	end
 end
 
 function SNOWshipPlayer(otherPlayer, callbackFunction)
+    if not Hub.canHarm(otherPlayer) then return false end
 	if Player.Character and (Player.Character:FindFirstChild("HumanoidRootPart") and (typeof(otherPlayer) == "Instance" and (otherPlayer:IsA("Player") and otherPlayer.Character)) and otherPlayer.Character:FindFirstChild("HumanoidRootPart")) then
 		local otherPlayerHumanoidRootPart = otherPlayer.Character.HumanoidRootPart
 		local distanceFromOtherPlayer = Player:DistanceFromCharacter(otherPlayerHumanoidRootPart.Position)
@@ -1350,23 +1844,26 @@ function SNOWshipPlayer(otherPlayer, callbackFunction)
 			return true
 		end
 		if distanceFromOtherPlayer <= 30 then
-			setNetworkOwnerEvent:FireServer(otherPlayerHumanoidRootPart, lookAt(Player.Character.HumanoidRootPart.Position, otherPlayerHumanoidRootPart.Position))
+			Hub.fire(setNetworkOwnerEvent, otherPlayerHumanoidRootPart, lookAt(Player.Character.HumanoidRootPart.Position, otherPlayerHumanoidRootPart.Position))
 		end
 	end
 end
 
 function SNOWship(targetPart)
+    if not Hub.canAffect(targetPart) then return false end
 	if targetPart and typeof(targetPart) == "Instance" then
 		local distanceFromCharacter = Player:DistanceFromCharacter(targetPart.Position)
 		if Player.Character and (Player.Character:FindFirstChild("HumanoidRootPart") and distanceFromCharacter <= 30) then
-			setNetworkOwnerEvent:FireServer(targetPart, lookAt(Player.Character.HumanoidRootPart.Position, targetPart.Position))
+			Hub.fire(setNetworkOwnerEvent, targetPart, lookAt(Player.Character.HumanoidRootPart.Position, targetPart.Position))
 		end
 	end
 end
 
 function CreateSkyVelocity(skyObject)
+    if not Hub.canAffect(skyObject) then return end
+	if not skyObject or not skyObject.Parent then return end
 	if not skyObject:FindFirstChild("SkyVelocity") then
-		local skyVelocityBodyVelocity = Instance.new("BodyVelocity", skyObject)
+		local skyVelocityBodyVelocity = Hub.new("BodyVelocity", skyObject)
 		skyVelocityBodyVelocity.Name = "SkyVelocity"
 		skyVelocityBodyVelocity.Velocity = Vector3.new(0, 100000000000000, 0)
 		skyVelocityBodyVelocity.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
@@ -1374,9 +1871,24 @@ function CreateSkyVelocity(skyObject)
 end
 
 local heldObjectName = nil
-character.DescendantAdded:Connect(function(hitPart)
+Hub.attackerBindings = {}
+Hub.attackerBusy = {}
+local function hookAttackerCharacter(boundCharacter)
+    for _, connection in ipairs(Hub.attackerBindings) do connection:Disconnect() end
+    table.clear(Hub.attackerBindings)
+    Hub.attackerBusy = {}
+    local generation = Hub.characterGeneration
+    local function isCurrent()
+        local hum = boundCharacter:FindFirstChildOfClass("Humanoid")
+        return Hub.alive and AutoAttacker and boundCharacter == Player.Character
+            and generation == Hub.characterGeneration and hum and hum.Health > 0
+    end
+    local function handleOwner(hitPart)
+        if not isCurrent() or not hitPart:IsDescendantOf(boundCharacter) then return end
+        if not hitPart:IsA("StringValue") and not hitPart:IsA("ObjectValue") then return end
 	if hitPart.Name == "PartOwner" then
-		heldObjectName = tostring(hitPart.Value)
+		local value = hitPart.Value
+        heldObjectName = typeof(value) == "Instance" and value.Name or tostring(value)
 		if AutoAttacker then
 			local otherPlayer = Players:FindFirstChild(heldObjectName)
 			local otherHumanoid = nil
@@ -1390,11 +1902,13 @@ character.DescendantAdded:Connect(function(hitPart)
 			end
 
 			-- Check if it's not yourself and not authorized (add isAuthorized if you have it)
-			if otherPlayer and otherPlayer ~= Player then
+			if Hub.canHarm(otherPlayer) and otherHumanoid and otherHumanoidRootPart then
+                if Hub.attackerBusy[otherPlayer] then return end
+                Hub.attackerBusy[otherPlayer] = true
 				-- Death mode counter action
 				local counterAction = function()
 					local humanoidInstance = otherHumanoid
-					if humanoidInstance then
+					if isCurrent() and Hub.canHarm(otherPlayer) and humanoidInstance and humanoidInstance.Parent and otherHumanoidRootPart.Parent then
 						CreateSkyVelocity(otherHumanoidRootPart)
 						for _ = 0, 20 do
 							humanoidInstance.BreakJointsOnDeath = false
@@ -1403,42 +1917,72 @@ character.DescendantAdded:Connect(function(hitPart)
 							humanoidInstance.Sit = true
 						end
 						task.wait()
-						ReplicatedStorage.GrabEvents.DestroyGrabLine:FireServer(otherHumanoidRootPart)
+						Hub.fire(ReplicatedStorage.GrabEvents.DestroyGrabLine, otherHumanoidRootPart)
 					end
 				end
 
 				-- Execute SNOWship loop
 				for _ = 1, 50 do
+                    if not isCurrent() or not Hub.canHarm(otherPlayer) or otherPlayer.Character ~= otherHumanoid.Parent then break end
 					if SNOWshipPlayer(otherPlayer, counterAction) then
 						break
 					end
 					task.wait()
 				end
+                Hub.attackerBusy[otherPlayer] = nil
 			end
 		end 
 	end
+    end
+    local function watchOwner(instance)
+        if instance.Name ~= "PartOwner" then return end
+        if not instance:IsA("StringValue") and not instance:IsA("ObjectValue") then return end
+        table.insert(Hub.attackerBindings, Hub.connect(instance.Changed, function()
+            task.spawn(function() handleOwner(instance) end)
+        end))
+        task.spawn(function() handleOwner(instance) end)
+    end
+    headConnection = Hub.connect(boundCharacter.DescendantAdded, function(instance)
+        watchOwner(instance)
+        if instance:IsA("Humanoid") or instance.Name == "HumanoidRootPart" then
+            task.defer(function() if Hub.scanAttacker then Hub.scanAttacker() end end)
+        end
+    end)
+    table.insert(Hub.attackerBindings, headConnection)
+    Hub.scanAttacker = function()
+        if not isCurrent() then return end
+        for _, instance in ipairs(boundCharacter:GetDescendants()) do
+            if instance.Name == "PartOwner" then task.spawn(function() handleOwner(instance) end) end
+        end
+    end
+    for _, instance in ipairs(boundCharacter:GetDescendants()) do watchOwner(instance) end
+end
+if character then hookAttackerCharacter(character) end
+Hub.connect(Player.CharacterRemoving, function()
+    for _, connection in ipairs(Hub.attackerBindings) do connection:Disconnect() end
+    table.clear(Hub.attackerBindings)
+    table.clear(Hub.attackerBusy)
+    Hub.scanAttacker = nil
 end)
+Hub.connect(Player.CharacterAdded, hookAttackerCharacter)
 
 -- Player Tab
 local PlayerView = Tabs.Player:AddLeftGroupbox("View & Movement")
 local PlayerESP = Tabs.Player:AddRightGroupbox("ESP")
 local PlayerPerf = Tabs.Player:AddRightGroupbox("Performance")
 
--- Third Person View
+do
+-- Third Person: restore the actual original camera mode.
 local function enableThirdPerson()
-	Player.CameraMode = Enum.CameraMode.Classic
-	Camera.CameraType = Enum.CameraType.Custom
-	Camera.CameraSubject = Player.Character:WaitForChild("Humanoid")
-	Player.CameraMaxZoomDistance = 16456456546
-	Player.CameraMinZoomDistance = 0.5
+    Player.CameraMode = Enum.CameraMode.Classic
+    Player.CameraMaxZoomDistance = math.max(Hub.cameraOriginal.max, 128)
+    Player.CameraMinZoomDistance = 0.5
 end
-
 local function disableThirdPerson()
-	Player.CameraMode = Enum.CameraMode.LockFirstPerson
-	Camera.CameraType = Enum.CameraType.Custom
-	Camera.CameraSubject = Player.Character:WaitForChild("Humanoid")
-	Player.CameraMaxZoomDistance = 0
-	Player.CameraMinZoomDistance = 0
+    Player.CameraMaxZoomDistance = math.max(Player.CameraMaxZoomDistance, Hub.cameraOriginal.max)
+    Player.CameraMinZoomDistance = Hub.cameraOriginal.min
+    Player.CameraMaxZoomDistance = Hub.cameraOriginal.max
+    Player.CameraMode = Hub.cameraOriginal.mode
 end
 
 PlayerView:AddToggle("ThirdPersonToggle", {
@@ -1449,6 +1993,8 @@ PlayerView:AddToggle("ThirdPersonToggle", {
 	end
 })
 
+end
+
 -- Spin Character
 local spinningConnection
 local spinSpeed = 5
@@ -1457,10 +2003,10 @@ PlayerView:AddToggle("SpinToggle", {
 	Default = false,
 	Callback = function(Value)
 		if Value then
-			spinningConnection = RunService.Heartbeat:Connect(function()
+			spinningConnection = Hub.connect(RunService.Heartbeat, function(dt)
 				local character = Player.Character
 				local root = character and character:FindFirstChild("HumanoidRootPart")
-				if root then root.CFrame = root.CFrame * CFrame.Angles(0, math.rad(spinSpeed), 0) end
+				if root then root.CFrame = root.CFrame * CFrame.Angles(0, math.rad(spinSpeed * dt * 60), 0) end
 			end)
 		else
 			if spinningConnection then spinningConnection:Disconnect() spinningConnection = nil end
@@ -1502,13 +2048,13 @@ PlayerView:AddToggle("SpeedModifierToggle", {
 	Callback = function(Value)
 		speedModifierEnabled = Value
 		if Value then
-			SpeedModConnection = RunService.Heartbeat:Connect(function()
+			SpeedModConnection = Hub.connect(RunService.Heartbeat, function(dt)
 				local character = Player.Character
 				if character then
 					local root = character:FindFirstChild("HumanoidRootPart")
 					local hum = character:FindFirstChildOfClass("Humanoid")
 					if root and hum then
-						root.CFrame = root.CFrame + hum.MoveDirection * speedMultiplier
+						root.CFrame = root.CFrame + hum.MoveDirection * speedMultiplier * math.min(dt, 0.1) * 60
 					end
 				end
 			end)
@@ -1528,9 +2074,11 @@ PlayerView:AddToggle("JumpModifierToggle", {
 			local hum = character:FindFirstChild("Humanoid")
 			if hum then
 				if Value then
-					hum.JumpPower = JumpPower
+					Hub.backup(hum, {"JumpPower", "UseJumpPower"})
+                    hum.UseJumpPower = true
+                    hum.JumpPower = JumpPower
 				else
-					hum.JumpPower = 50
+					Hub.restore(hum)
 				end
 			end
 		end
@@ -1561,32 +2109,26 @@ PlayerView:AddSlider("JumpValue", {
 			if character then
 				local hum = character:FindFirstChild("Humanoid")
 				if hum then
-					hum.JumpPower = Value
+					Hub.backup(hum, {"JumpPower", "UseJumpPower"})
+                    hum.UseJumpPower = true
+                    hum.JumpPower = Value
 				end
 			end
 		end
 	end
 })
 
-Player.CharacterAdded:Connect(function(char)
-	local hum = char:WaitForChild("Humanoid")
-	task.wait(0.1)
-	if jumpModifierEnabled then
-		hum.JumpPower = JumpPower
-	end
-	if speedModifierEnabled and SpeedModConnection then
-		SpeedModConnection:Disconnect()
-		SpeedModConnection = RunService.Heartbeat:Connect(function()
-			local root = char:FindFirstChild("HumanoidRootPart")
-			local humanoid = char:FindFirstChildOfClass("Humanoid")
-			if root and humanoid then
-				root.CFrame = root.CFrame + humanoid.MoveDirection * speedMultiplier
-			end
-		end)
-	end
+Hub.connect(Player.CharacterAdded, function(char)
+    local hum = char:WaitForChild("Humanoid", 5)
+    if not hum or Player.Character ~= char then return end
+    if jumpModifierEnabled then
+        Hub.backup(hum, {"JumpPower", "UseJumpPower"})
+        hum.UseJumpPower = true
+        hum.JumpPower = JumpPower
+    end
 end)
 
-UserInputService.JumpRequest:Connect(function()
+Hub.connect(UserInputService.JumpRequest, function()
 	if infJump then
 		local character = Player.Character
 		if character and character:FindFirstChildOfClass("Humanoid") then
@@ -1607,7 +2149,7 @@ end
 
 local function AddBoxESP(obj)
 	if espBoxes[obj] then return end
-	local box = Instance.new("BoxHandleAdornment")
+	local box = Hub.new("BoxHandleAdornment")
 	box.Adornee = obj
 	box.AlwaysOnTop = true
 	box.ZIndex = 5
@@ -1616,7 +2158,7 @@ local function AddBoxESP(obj)
 	box.Size = obj.Size
 	box.Parent = game.CoreGui
 	espBoxes[obj] = box
-	obj.AncestryChanged:Connect(function(_, parent)
+	Hub.connect(obj.AncestryChanged, function(_, parent)
 		if not parent and espBoxes[obj] then espBoxes[obj]:Destroy() espBoxes[obj] = nil end
 	end)
 end
@@ -1630,7 +2172,7 @@ local function Scan()
 	for _, obj in ipairs(workspace:GetDescendants()) do if espEnabled and IsTarget(obj) then AddBoxESP(obj) end end
 end
 
-workspace.DescendantAdded:Connect(function(obj) if espEnabled and IsTarget(obj) then AddBoxESP(obj) end end)
+Hub.connect(workspace.DescendantAdded, function(obj) if espEnabled and IsTarget(obj) then AddBoxESP(obj) end end)
 
 PlayerESP:AddToggle("BoxESPWhite", {
 	Text = "PCLD View",
@@ -1646,13 +2188,22 @@ PlayerESP:AddToggle("NicknameESP", {
 	Text = "Esp",
 	Default = false,
 	Callback = function(Value)
+        Hub.nameESPConnections = Hub.nameESPConnections or {}
+        for _, connection in ipairs(Hub.nameESPConnections) do connection:Disconnect() end
+        table.clear(Hub.nameESPConnections)
+        local function espConnect(signal, callback)
+            local connection = Hub.connect(signal, callback)
+            table.insert(Hub.nameESPConnections, connection)
+            return connection
+        end
 		local function createESP(plr)
+            if not Toggles.NicknameESP.Value then return end
 			if plr == Player then return end
 			if plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then
 				local hrp = plr.Character.HumanoidRootPart
 				if hrp:FindFirstChild("NameESP") then return end
 
-				local billboard = Instance.new("BillboardGui")
+				local billboard = Hub.new("BillboardGui")
 				billboard.Name = "NameESP"
 				billboard.Adornee = hrp
 				billboard.Size = UDim2.new(0, 120, 0, 70)
@@ -1660,12 +2211,12 @@ PlayerESP:AddToggle("NicknameESP", {
 				billboard.AlwaysOnTop = true
 				billboard.Parent = hrp
 
-				local container = Instance.new("Frame")
+				local container = Hub.new("Frame")
 				container.Size = UDim2.new(1, 0, 1, 0)
 				container.BackgroundTransparency = 1
 				container.Parent = billboard
 
-				local pfpFrame = Instance.new("Frame")
+				local pfpFrame = Hub.new("Frame")
 				pfpFrame.Size = UDim2.new(0, 40, 0, 40)
 				pfpFrame.Position = UDim2.new(0.5, 0, 0, 0)
 				pfpFrame.AnchorPoint = Vector2.new(0.5, 0)
@@ -1673,21 +2224,21 @@ PlayerESP:AddToggle("NicknameESP", {
 				pfpFrame.BorderSizePixel = 0
 				pfpFrame.Parent = container
 
-				local pfpCorner = Instance.new("UICorner")
+				local pfpCorner = Hub.new("UICorner")
 				pfpCorner.CornerRadius = UDim.new(1, 0)
 				pfpCorner.Parent = pfpFrame
 
-				local pfpImage = Instance.new("ImageLabel")
+				local pfpImage = Hub.new("ImageLabel")
 				pfpImage.Size = UDim2.new(1, 0, 1, 0)
 				pfpImage.BackgroundTransparency = 1
 				pfpImage.Image = "https://www.roblox.com/headshot-thumbnail/image?userId=" .. plr.UserId .. "&width=150&height=150&format=png"
 				pfpImage.Parent = pfpFrame
 
-				local pfpImageCorner = Instance.new("UICorner")
+				local pfpImageCorner = Hub.new("UICorner")
 				pfpImageCorner.CornerRadius = UDim.new(1, 0)
 				pfpImageCorner.Parent = pfpImage
 
-				local textLabel = Instance.new("TextLabel")
+				local textLabel = Hub.new("TextLabel")
 				textLabel.Size = UDim2.new(1, 0, 0, 25)
 				textLabel.Position = UDim2.new(0, 0, 0, 45)
 				textLabel.BackgroundTransparency = 1
@@ -1706,13 +2257,13 @@ PlayerESP:AddToggle("NicknameESP", {
 		if Value then
 			for _, plr in pairs(Players:GetPlayers()) do 
 				createESP(plr) 
-				plr.CharacterAdded:Connect(function() 
+				espConnect(plr.CharacterAdded, function() 
 					task.wait(0.1)
 					createESP(plr) 
 				end) 
 			end
-			Players.PlayerAdded:Connect(function(plr) 
-				plr.CharacterAdded:Connect(function() 
+			espConnect(Players.PlayerAdded, function(plr) 
+				espConnect(plr.CharacterAdded, function() 
 					task.wait(0.1)
 					createESP(plr) 
 				end) 
@@ -1804,7 +2355,7 @@ end
 local function startNoclip()
 	if noclipConn then return end
 
-	noclipConn = RunService.Stepped:Connect(function()
+	noclipConn = Hub.connect(RunService.Stepped, function()
 		if not noclipEnabled then return end
 		local char = Player.Character
 		if char then
@@ -1812,7 +2363,7 @@ local function startNoclip()
 		end
 	end)
 
-	charConn = Player.CharacterAdded:Connect(function()
+	charConn = Hub.connect(Player.CharacterAdded, function()
 		task.wait(0.2)
 		if noclipEnabled then
 			restoreCollision()
@@ -1836,7 +2387,7 @@ PlayerView:AddToggle("SelfNoclipToggle", {
 	Text = "Noclip",
 	Default = false,
 	Callback = function(on)
-		SaveManager:Save("AutoSave")
+		Hub.requestSave()
 		noclipEnabled = on
 		if on then
 			startNoclip()
@@ -1890,7 +2441,7 @@ local function autoblob()
 	if not blob then
 		task.spawn(function()
 			pcall(function()
-				ReplicatedStorage.MenuToys.SpawnToyRemoteFunction:InvokeServer("CreatureBlobman", hrp.CFrame, Vector3.zero)
+				Hub.invoke(ReplicatedStorage.MenuToys.SpawnToyRemoteFunction, "CreatureBlobman", hrp.CFrame, Vector3.zero)
 			end)
 		end)
 
@@ -1974,7 +2525,7 @@ TargetGroup:AddToggle("LoopKickToggle", {
 					target = SelectedPlayer
 				end
 
-				local tChar = target.Character    
+				local tChar = Hub.canHarm(target) and target.Character or nil    
 				local tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")    
 				local tHum = tChar and tChar:FindFirstChild("Humanoid")    
 
@@ -1983,19 +2534,19 @@ TargetGroup:AddToggle("LoopKickToggle", {
 
 				if tRoot and tHum and tHum.Health > 0 and myRoot then    
 
-					tRoot.AssemblyLinearVelocity = Vector3.zero    
-					tRoot.AssemblyAngularVelocity = Vector3.zero    
-					tRoot.Velocity = Vector3.zero    
+					if Hub.canAffect(tRoot) then tRoot.AssemblyLinearVelocity = Vector3.zero end
+					if Hub.canAffect(tRoot) then tRoot.AssemblyAngularVelocity = Vector3.zero end
+					if Hub.canAffect(tRoot) then tRoot.Velocity = Vector3.zero end
 
 					if not dragging then    
-						myRoot.CFrame = tRoot.CFrame    
+						if Hub.canAffect(tRoot) then myRoot.CFrame = tRoot.CFrame end
 						myRoot.Velocity = Vector3.zero    
 
 						pcall(function()    
-							tHum.PlatformStand = true    
-							tHum.Sit = true    
-							GE.SetNetworkOwner:FireServer(tRoot, myRoot.CFrame)    
-							GE.CreateGrabLine:FireServer(tRoot, Vector3.zero, tRoot.Position, false)    
+							if Hub.canAffect(tHum) then tHum.PlatformStand = true end
+							if Hub.canAffect(tHum) then tHum.Sit = true end
+							Hub.fire(GE.SetNetworkOwner, tRoot, myRoot.CFrame)    
+							Hub.fire(GE.CreateGrabLine, tRoot, Vector3.zero, tRoot.Position, false)    
 						end)    
 
 						if grabStartTime == 0 then grabStartTime = tick() end    
@@ -2009,18 +2560,18 @@ TargetGroup:AddToggle("LoopKickToggle", {
 
 						local lockPos = savedPos * CFrame.new(0, 17, 0)    
 
-						tRoot.CFrame = lockPos    
-						tRoot.Velocity = Vector3.zero    
-						tRoot.RotVelocity = Vector3.zero    
+						if Hub.canAffect(tRoot) then tRoot.CFrame = lockPos end
+						if Hub.canAffect(tRoot) then tRoot.Velocity = Vector3.zero end
+						if Hub.canAffect(tRoot) then tRoot.RotVelocity = Vector3.zero end
 
-						tHum.PlatformStand = true    
-						tHum.Sit = false    
+						if Hub.canAffect(tHum) then tHum.PlatformStand = true end
+						if Hub.canAffect(tHum) then tHum.Sit = false end
 
 						pcall(function()    
-							GE.SetNetworkOwner:FireServer(tRoot, lockPos)    
-							GE.CreateGrabLine:FireServer(tRoot, Vector3.zero, tRoot.Position, false)    
-							GE.DestroyGrabLine:FireServer(tRoot)    
-							GE.CreateGrabLine:FireServer(tRoot, Vector3.zero, tRoot.Position, false)    
+							Hub.fire(GE.SetNetworkOwner, tRoot, lockPos)    
+							Hub.fire(GE.CreateGrabLine, tRoot, Vector3.zero, tRoot.Position, false)    
+							Hub.fire(GE.DestroyGrabLine, tRoot)    
+							Hub.fire(GE.CreateGrabLine, tRoot, Vector3.zero, tRoot.Position, false)    
 						end)    
 					end    
 				else    
@@ -2048,7 +2599,7 @@ TargetGroup:AddToggle("LoopKillToggle", {
 	Text = "Loop kill",
 	Default = false,
 	Callback = function(on)
-		SaveManager:Save("AutoSave")
+		Hub.requestSave()
 		loopKillEnabled = on
 		if on then
 			local target = SelectedPlayer
@@ -2063,7 +2614,7 @@ TargetGroup:AddToggle("LoopKillToggle", {
 				local GE = RS:WaitForChild("GrabEvents")
 
 				while loopKillEnabled do
-					if not target or not target.Parent or not target.Character then
+					if not Hub.canHarm(target) or not target.Character then
 						loopKillEnabled = false
 						Toggles.LoopKillToggle:SetValue(false)
 						break
@@ -2071,7 +2622,7 @@ TargetGroup:AddToggle("LoopKillToggle", {
 
 					local myChar = Player.Character
 					local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
-					local tChar = target.Character
+					local tChar = Hub.canHarm(target) and target.Character or nil
 					local tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")
 					local tHum = tChar and tChar:FindFirstChild("Humanoid")
 					local tHead = tChar and tChar:FindFirstChild("Head")
@@ -2080,14 +2631,14 @@ TargetGroup:AddToggle("LoopKillToggle", {
 						local currentPos = myRoot.CFrame
 
 						for _ = 0, 50 do
-							if not loopKillEnabled or not tRoot.Parent then break end
+							if not loopKillEnabled or not Hub.canHarm(target) or not tRoot.Parent then break end
 
 							applyNoclip(myChar)
 							SNOWship(tRoot)
 
 							-- Check if SNOWship was successful
 							if not loopKillEnabled or (CheckNetworkOwnerShipOnPlayer and CheckNetworkOwnerShipOnPlayer(target)) or tRoot.AssemblyLinearVelocity.Magnitude > 500 then
-								GE.DestroyGrabLine:FireServer(tRoot)
+								Hub.fire(GE.DestroyGrabLine, tRoot)
 								CreateSkyVelocity(tRoot)
 								break
 							end
@@ -2096,17 +2647,17 @@ TargetGroup:AddToggle("LoopKillToggle", {
 
 							-- Teleport to target
 							if tRoot.Position.Y <= -12 then
-								myRoot.CFrame = CFrame.new(tRoot.Position + Vector3.new(0, 5, -15))
+								if Hub.canAffect(tRoot) then myRoot.CFrame = CFrame.new(tRoot.Position + Vector3.new(0, 5, -15)) end
 							else
-								myRoot.CFrame = CFrame.new(tRoot.Position + Vector3.new(0, -10, -10))
+								if Hub.canAffect(tRoot) then myRoot.CFrame = CFrame.new(tRoot.Position + Vector3.new(0, -10, -10)) end
 							end
 							myRoot.Velocity = Vector3.zero
 
 							-- Apply death state
-							tHum.BreakJointsOnDeath = false
-							tHum:ChangeState(Enum.HumanoidStateType.Dead)
-							tHum.Jump = true
-							tHum.Sit = false
+							if Hub.canAffect(tHum) then tHum.BreakJointsOnDeath = false end
+							if Hub.canAffect(tHum) then tHum:ChangeState(Enum.HumanoidStateType.Dead) end
+							if Hub.canAffect(tHum) then tHum.Jump = true end
+							if Hub.canAffect(tHum) then tHum.Sit = false end
 						end
 
 						if myRoot then
@@ -2137,7 +2688,7 @@ TargetGroup:AddToggle("LoopKillToggleAll", {
 	Text = "Loop kill All",
 	Default = false,
 	Callback = function(on)
-		SaveManager:Save("AutoSave")
+		Hub.requestSave()
 		loopKillEnabledAll = on
 		if on then
 			task.spawn(function()
@@ -2154,13 +2705,13 @@ TargetGroup:AddToggle("LoopKillToggleAll", {
 
 						for _, target in pairs(PS:GetPlayers()) do
 							if not loopKillEnabledAll then break end
-							if target == Player then continue end
+							if not Hub.canHarm(target) then continue end
 
-							if not target or not target.Parent or not target.Character then
+							if not Hub.canHarm(target) or not target.Character then
 								continue
 							end
 
-							local tChar = target.Character
+							local tChar = Hub.canHarm(target) and target.Character or nil
 							local tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")
 							local tHum = tChar and tChar:FindFirstChild("Humanoid")
 							local tHead = tChar and tChar:FindFirstChild("Head")
@@ -2171,14 +2722,14 @@ TargetGroup:AddToggle("LoopKillToggleAll", {
 
 							if tRoot and tHum and tHead and tHum.Health > 0 and not isInPlot then
 								for _ = 0, 50 do
-									if not loopKillEnabledAll or not tRoot.Parent then break end
+									if not loopKillEnabledAll or not Hub.canHarm(target) or not tRoot.Parent then break end
 
 									applyNoclip(myChar)
 									SNOWship(tRoot)
 
 									-- Check if SNOWship was successful
 									if not loopKillEnabledAll or (CheckNetworkOwnerShipOnPlayer and CheckNetworkOwnerShipOnPlayer(target)) or tRoot.AssemblyLinearVelocity.Magnitude > 500 then
-										GE.DestroyGrabLine:FireServer(tRoot)
+										Hub.fire(GE.DestroyGrabLine, tRoot)
 										CreateSkyVelocity(tRoot)
 										break
 									end
@@ -2187,17 +2738,17 @@ TargetGroup:AddToggle("LoopKillToggleAll", {
 
 									-- Teleport to target
 									if tRoot.Position.Y <= -12 then
-										myRoot.CFrame = CFrame.new(tRoot.Position + Vector3.new(0, 5, -15))
+										if Hub.canAffect(tRoot) then myRoot.CFrame = CFrame.new(tRoot.Position + Vector3.new(0, 5, -15)) end
 									else
-										myRoot.CFrame = CFrame.new(tRoot.Position + Vector3.new(0, -10, -10))
+										if Hub.canAffect(tRoot) then myRoot.CFrame = CFrame.new(tRoot.Position + Vector3.new(0, -10, -10)) end
 									end
 									myRoot.Velocity = Vector3.zero
 
 									-- Apply death state
-									tHum.BreakJointsOnDeath = false
-									tHum:ChangeState(Enum.HumanoidStateType.Dead)
-									tHum.Jump = true
-									tHum.Sit = false
+									if Hub.canAffect(tHum) then tHum.BreakJointsOnDeath = false end
+									if Hub.canAffect(tHum) then tHum:ChangeState(Enum.HumanoidStateType.Dead) end
+									if Hub.canAffect(tHum) then tHum.Jump = true end
+									if Hub.canAffect(tHum) then tHum.Sit = false end
 								end
 
 								task.wait()
@@ -2230,7 +2781,7 @@ TargetGroup:AddToggle("LoopKickToggle2", {
 	Default = false,
 	Callback = function(on)
 		kickLoopEnabled = on
-		SaveManager:Save("AutoSave")
+		Hub.requestSave()
 
 		local target = SelectedPlayer
 		while on and not target do
@@ -2247,7 +2798,7 @@ TargetGroup:AddToggle("LoopKickToggle2", {
 			return 
 		end
 
-		if spawnedInToysFolder:FindFirstChild("CreatureBlob") then
+		if spawnedInToysFolder and spawnedInToysFolder:FindFirstChild("CreatureBlob") then
 			notify("No blob found!","Spawning blob!")
 		else
 			autoblob()
@@ -2270,7 +2821,7 @@ TargetGroup:AddToggle("LoopKickToggle2", {
 
 			local SavedPos = blobRoot.CFrame 
 
-			local tChar = target.Character
+			local tChar = Hub.canHarm(target) and target.Character or nil
 			local tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")
 
 			if tRoot and blobRoot then
@@ -2278,13 +2829,13 @@ TargetGroup:AddToggle("LoopKickToggle2", {
 				while tick() - bringStart < 0.35 do
 					if not kickLoopEnabled then break end
 
-					blobRoot.CFrame = tRoot.CFrame
+					if Hub.canAffect(tRoot) then blobRoot.CFrame = tRoot.CFrame end
 					blobRoot.Velocity = Vector3.zero
 
 					pcall(function()
-						if CG and R_Det then CG:FireServer(R_Det, tRoot, R_Weld) end
-						GE.CreateGrabLine:FireServer(tRoot, Vector3.zero, tRoot.Position, false)
-						GE.SetNetworkOwner:FireServer(tRoot, blobRoot.CFrame)
+						if CG and R_Det then Hub.fire(CG, R_Det, tRoot, R_Weld) end
+						Hub.fire(GE.CreateGrabLine, tRoot, Vector3.zero, tRoot.Position, false)
+						Hub.fire(GE.SetNetworkOwner, tRoot, blobRoot.CFrame)
 					end)
 					RunService.Heartbeat:Wait()
 				end
@@ -2297,12 +2848,12 @@ TargetGroup:AddToggle("LoopKickToggle2", {
 			local packetTimer = 0
 
 			while kickLoopEnabled do
-				if not target or not target.Parent or not target.Character then
+				if not Hub.canHarm(target) or not target.Character then
 					task.wait(0.5)
 					target = SelectedPlayer
 				end
 
-				local tChar = target.Character
+				local tChar = Hub.canHarm(target) and target.Character or nil
 				local tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")
 				local tHum = tChar and tChar:FindFirstChild("Humanoid")
 
@@ -2313,26 +2864,26 @@ TargetGroup:AddToggle("LoopKickToggle2", {
 
 					local lockPos = SavedPos * CFrame.new(0, 23, 0)
 
-					tRoot.CFrame = lockPos
-					tRoot.Velocity = Vector3.zero
-					tRoot.RotVelocity = Vector3.zero
+					if Hub.canAffect(tRoot) then tRoot.CFrame = lockPos end
+					if Hub.canAffect(tRoot) then tRoot.Velocity = Vector3.zero end
+					if Hub.canAffect(tRoot) then tRoot.RotVelocity = Vector3.zero end
 
 					if tick() - packetTimer > 0.05 then
 						packetTimer = tick()
 						pcall(function()
-							tHum.PlatformStand = true
-							tHum.Sit = true
+							if Hub.canAffect(tHum) then tHum.PlatformStand = true end
+							if Hub.canAffect(tHum) then tHum.Sit = true end
 
-							GE.SetNetworkOwner:FireServer(tRoot, lockPos)
+							Hub.fire(GE.SetNetworkOwner, tRoot, lockPos)
 
 							if R_Det then
 								local weld = R_Det:FindFirstChild("RightWeld") or R_Det:FindFirstChildWhichIsA("Weld")
-								if weld then CD:FireServer(weld) end
+								if weld then Hub.fire(CD, weld) end
 							end
-							GE.DestroyGrabLine:FireServer(tRoot)
+							Hub.fire(GE.DestroyGrabLine, tRoot)
 
-							if R_Det then CG:FireServer(R_Det, tRoot, R_Weld) end
-							GE.CreateGrabLine:FireServer(tRoot, Vector3.zero, tRoot.Position, false)
+							if R_Det then Hub.fire(CG, R_Det, tRoot, R_Weld) end
+							Hub.fire(GE.CreateGrabLine, tRoot, Vector3.zero, tRoot.Position, false)
 						end)
 					end
 				else
@@ -2360,15 +2911,15 @@ TargetGroup:AddToggle("DualHandLoopKick", {
 	Text = "Loop Kick",
 	Default = false,
 	Callback = function(on)
-		SaveManager:Save("AutoSave")
+		Hub.requestSave()
 		loopKickDualActive = on
 		if on then
-			if not SelectedPlayer then 
+			if not Hub.canHarm(SelectedPlayer) then 
 				notify("Error", "Select target first", 3)
 				Toggles.DualHandLoopKick:SetValue(false)
 				return 
 			end
-			if spawnedInToysFolder:FindFirstChild("CreatureBlob") then
+			if spawnedInToysFolder and spawnedInToysFolder:FindFirstChild("CreatureBlob") then
 				notify("No blob found!","Spawning blob!")
 			else
 				autoblob()
@@ -2401,7 +2952,7 @@ TargetGroup:AddToggle("DualHandLoopKick", {
 
 					local hrp = char:FindFirstChild("HumanoidRootPart")
 
-					local targetChar = target.Character
+					local targetChar = Hub.canHarm(target) and target.Character or nil
 					local targetHRP = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
 					local targetHum = targetChar and targetChar:FindFirstChild("Humanoid")
 
@@ -2411,32 +2962,32 @@ TargetGroup:AddToggle("DualHandLoopKick", {
 							if bp then bp:Destroy() bp = nil end
 							if hrp then hrp.CFrame = targetHRP.CFrame * CFrame.new(0, 25, 0) end
 							task.wait(0.2)
-							grab:FireServer(leftDet, targetHRP, leftWeld)
+							Hub.fire(grab, leftDet, targetHRP, leftWeld)
 							task.wait(0.3)
-							drop:FireServer(leftWeld, targetHRP)
+							Hub.fire(drop, leftWeld, targetHRP)
 							task.wait(0.1)
-							bp = Instance.new("BodyPosition")
+							bp = Hub.new("BodyPosition")
 							bp.Position = Vector3.new(0, 999999, 0)
 							bp.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
 							bp.Parent = targetHRP
-							grab:FireServer(leftDet, targetHRP, leftWeld)
+							Hub.fire(grab, leftDet, targetHRP, leftWeld)
 							task.wait(0.2)
-							drop:FireServer(leftWeld, targetHRP)
+							Hub.fire(drop, leftWeld, targetHRP)
 						end
 
-						grab:FireServer(leftDet, targetHRP, leftWeld)
+						Hub.fire(grab, leftDet, targetHRP, leftWeld)
 						task.wait()
-						drop:FireServer(leftWeld, targetHRP)
+						Hub.fire(drop, leftWeld, targetHRP)
 						task.wait()
-						grab:FireServer(rightDet, targetHRP, rightWeld)
+						Hub.fire(grab, rightDet, targetHRP, rightWeld)
 						task.wait()
-						drop:FireServer(rightWeld, targetHRP)
+						Hub.fire(drop, rightWeld, targetHRP)
 						task.wait()
-						grab:FireServer(leftDet, targetHRP, leftWeld)
-						grab:FireServer(rightDet, targetHRP, rightWeld)
+						Hub.fire(grab, leftDet, targetHRP, leftWeld)
+						Hub.fire(grab, rightDet, targetHRP, rightWeld)
 						task.wait()
-						drop:FireServer(leftWeld, targetHRP)
-						drop:FireServer(rightWeld, targetHRP)
+						Hub.fire(drop, leftWeld, targetHRP)
+						Hub.fire(drop, rightWeld, targetHRP)
 						task.wait()
 					else
 						task.wait(0.1)
@@ -2459,7 +3010,7 @@ TargetGroup:AddToggle("PlayerFlingBtn", {
 	Text = "Fling",
 	Default = false,
 	Callback = function(on)
-		SaveManager:Save("AutoSave")
+		Hub.requestSave()
 		playerFlingActive = on
 
 		if on then
@@ -2491,36 +3042,37 @@ TargetGroup:AddToggle("PlayerFlingBtn", {
 					end
 
 					if target and target.Parent then
-						local tChar = target.Character
+						local tChar = Hub.canHarm(target) and target.Character or nil
 						local tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")
 						local tHum = tChar and tChar:FindFirstChild("Humanoid")
 
 						if tRoot and tHum and tHum.Health > 0 then
 							if not flingBAV or flingBAV.Parent ~= hrp then
 								if flingBAV then flingBAV:Destroy() end
-								flingBAV = Instance.new("BodyAngularVelocity")
+								flingBAV = Hub.new("BodyAngularVelocity")
 								flingBAV.Name = "MaestroSpin"
 								flingBAV.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
 								flingBAV.AngularVelocity = Vector3.new(0, 10000, 0)
 								flingBAV.P = 10000
 								flingBAV.Parent = hrp
+                            Hub.assetTargets[flingBAV] = tRoot
 							end
 
 							for _, part in pairs(char:GetDescendants()) do
 								if part:IsA("BasePart") then
-									part.CanCollide = false
+									if Hub.canAffect(part) then part.CanCollide = false end
 								end
 							end
 
-							local loop = RunService.Heartbeat:Connect(function()
-								if not playerFlingActive or not tRoot or not tRoot.Parent then return end
-								hrp.CFrame = tRoot.CFrame
+							local loop = Hub.connect(RunService.Heartbeat, function()
+								if not playerFlingActive or not Hub.canHarm(target) or not tRoot or not tRoot.Parent then return end
+								if Hub.canAffect(tRoot) then hrp.CFrame = tRoot.CFrame end
 								hrp.Velocity = Vector3.zero 
 							end)
 
 							local startTime = tick()
 							while tick() - startTime < 1.5 do
-								if not playerFlingActive or not tRoot.Parent then break end
+								if not playerFlingActive or not Hub.canHarm(target) or not tRoot.Parent then break end
 								task.wait(0.1)
 							end
 
@@ -2542,7 +3094,7 @@ TargetGroup:AddToggle("PlayerFlingBtn", {
 				if char then
 					for _, part in pairs(char:GetDescendants()) do
 						if part:IsA("BasePart") then
-							part.CanCollide = true
+							if Hub.canAffect(part) then part.CanCollide = true end
 						end
 					end
 					local hrp = char:FindFirstChild("HumanoidRootPart")
@@ -2577,7 +3129,7 @@ BlobGroup:AddToggle("AutoSitZ", {
 	end
 })
 
-UserInputService.InputBegan:Connect(function(input, processed)
+Hub.connect(UserInputService.InputBegan, function(input, processed)
 	if not processed and input.KeyCode == Enum.KeyCode.B and _G.AutoSitBlobZ then
 		local plr = Player
 		local char = plr.Character
@@ -2593,7 +3145,7 @@ UserInputService.InputBegan:Connect(function(input, processed)
 		if not blob then
 			task.spawn(function()
 				pcall(function()
-					ReplicatedStorage.MenuToys.SpawnToyRemoteFunction:InvokeServer("CreatureBlobman", hrp.CFrame, Vector3.zero)
+					Hub.invoke(ReplicatedStorage.MenuToys.SpawnToyRemoteFunction, "CreatureBlobman", hrp.CFrame, Vector3.zero)
 				end)
 			end)
 
@@ -2629,7 +3181,7 @@ local blobFlyActive = false
 local blobFlySpeed = 50
 local bvInstance, bgInstance
 
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
+Hub.connect(UserInputService.InputBegan, function(input, gameProcessed)
 	if not gameProcessed and input.KeyCode == Enum.KeyCode.R then
 		if blobMasterSwitch then
 			blobFlyActive = not blobFlyActive
@@ -2660,7 +3212,7 @@ local function GetBlobRoot()
 	return nil
 end
 
-RunService.Heartbeat:Connect(function()
+Hub.connect(RunService.Heartbeat, function()
 	if not blobFlyActive or not blobMasterSwitch then 
 		if bvInstance then bvInstance:Destroy() bvInstance = nil end
 		if bgInstance then bgInstance:Destroy() bgInstance = nil end
@@ -2670,7 +3222,7 @@ RunService.Heartbeat:Connect(function()
 	local root = GetBlobRoot()
 	if root then
 		if not root:FindFirstChild("BlobFlyVelocity") then
-			bvInstance = Instance.new("BodyVelocity")
+			bvInstance = Hub.new("BodyVelocity")
 			bvInstance.Name = "BlobFlyVelocity"
 			bvInstance.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
 			bvInstance.P = 10000
@@ -2680,7 +3232,7 @@ RunService.Heartbeat:Connect(function()
 		end
 
 		if not root:FindFirstChild("BlobFlyGyro") then
-			bgInstance = Instance.new("BodyGyro")
+			bgInstance = Hub.new("BodyGyro")
 			bgInstance.Name = "BlobFlyGyro"
 			bgInstance.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
 			bgInstance.P = 20000
@@ -2740,7 +3292,7 @@ TargetGroup:AddToggle("DestroyTargetGucci", {
 
 			task.spawn(function()
 				while DestroyTargetGucciActive do
-					if not SelectedPlayer or not SelectedPlayer.Parent then
+					if not Hub.canHarm(SelectedPlayer) then
 						notify("System", "Player left", 3)
 						DestroyTargetGucciActive = false
 						Toggles.DestroyTargetGucci:SetValue(false)
@@ -2755,13 +3307,13 @@ TargetGroup:AddToggle("DestroyTargetGucci", {
 						local foundBlob = false
 
 						for _, obj in ipairs(toysFolder:GetChildren()) do
-							if not DestroyTargetGucciActive then break end
+							if not DestroyTargetGucciActive or not Hub.canAffect(toysFolder) then break end
 
 							if obj.Name == "CreatureBlobman" then
 								foundBlob = true
 								local seat = obj:FindFirstChild("VehicleSeat") or obj:FindFirstChildWhichIsA("VehicleSeat", true)
 
-								if seat then
+								if seat and Hub.canAffect(seat) then
 									local myChar = Player.Character
 									local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
 									local myHum = myChar and myChar:FindFirstChild("Humanoid")
@@ -2771,8 +3323,8 @@ TargetGroup:AddToggle("DestroyTargetGucci", {
 											notify("Target", "Reset", 1)
 
 											local magnetConnection
-											magnetConnection = RunService.Stepped:Connect(function()
-												if myRoot and seat then
+											magnetConnection = Hub.connect(RunService.Stepped, function()
+												if myRoot and seat and Hub.canAffect(seat) then
 													myRoot.CFrame = seat.CFrame
 													myRoot.Velocity = Vector3.zero
 													if obj.PrimaryPart then
@@ -2784,10 +3336,10 @@ TargetGroup:AddToggle("DestroyTargetGucci", {
 
 											local sitStart = tick()
 											while tick() - sitStart < 1 do
-												if not DestroyTargetGucciActive then break end
+												if not DestroyTargetGucciActive or not Hub.canAffect(toysFolder) then break end
 												if myHum.SeatPart == seat then break end
 
-												seat:Sit(myHum)
+												if Hub.canAffect(seat) then seat:Sit(myHum) end
 												task.wait()
 											end
 
@@ -2827,13 +3379,13 @@ TargetGroup:AddToggle("DestroyTargetGucci", {
 TargetGroup:AddButton({
 	Text = "bring (blob)",
 	Func = function()
-		if not SelectedPlayer then return end
+		if not Hub.canHarm(SelectedPlayer) then return end
 
 		local char = Player.Character
 		local hum = char and char:FindFirstChild("Humanoid")
 		local seat = hum and hum.SeatPart
 
-		if spawnedInToysFolder:FindFirstChild("CreatureBlob") then
+		if spawnedInToysFolder and spawnedInToysFolder:FindFirstChild("CreatureBlob") then
 			notify("No blob found!","Spawning blob!")
 		else
 			autoblob()
@@ -2851,18 +3403,18 @@ TargetGroup:AddButton({
 		local R_Det = blob:FindFirstChild("RightDetector")
 		local R_Weld = R_Det and R_Det:FindFirstChild("RightWeld")
 
-		local tChar = SelectedPlayer.Character
+		local tChar = Hub.canHarm(SelectedPlayer) and SelectedPlayer.Character or nil
 		local tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")
 		if not tRoot then return end
 
 		local home = blobRoot.CFrame
-		blobRoot.CFrame = tRoot.CFrame
+		if Hub.canAffect(tRoot) then blobRoot.CFrame = tRoot.CFrame end
 		blobRoot.Velocity = Vector3.new()
 		blobRoot.RotVelocity = Vector3.new()
 		task.wait(0.3)
 
 		pcall(function()
-			CG:FireServer(R_Det, tRoot, R_Weld)
+			Hub.fire(CG, R_Det, tRoot, R_Weld)
 		end)
 
 		task.wait(0.5)
@@ -2872,9 +3424,9 @@ TargetGroup:AddButton({
 		task.wait(0.05)
 
 		for i = 1, 12 do
-			tRoot.CFrame = home * CFrame.new(0,3,0)
-			tRoot.Velocity = Vector3.new()
-			tRoot.RotVelocity = Vector3.new()
+			if Hub.canAffect(tRoot) then tRoot.CFrame = home * CFrame.new(0,3,0) end
+			if Hub.canAffect(tRoot) then tRoot.Velocity = Vector3.new() end
+			if Hub.canAffect(tRoot) then tRoot.RotVelocity = Vector3.new() end
 			task.wait(0.03)
 		end
 
@@ -2882,7 +3434,7 @@ TargetGroup:AddButton({
 			local weld = R_Det:FindFirstChild("RightWeld")
 			if weld then
 				pcall(function()
-					CD:FireServer(weld)
+					Hub.fire(CD, weld)
 				end)
 			end
 			task.wait(0.03)
@@ -2908,12 +3460,12 @@ TargetGroup:AddButton({
 			-- Process ALL players at once
 			local coroutines = {}
 			for _, target in ipairs(Players:GetPlayers()) do
-				if target == Player then continue end
+				if not Hub.canHarm(target) then continue end
 
 				local inPlot = target:FindFirstChild("InPlot")
 				if inPlot and inPlot.Value == true then continue end
 
-				local tChar = target.Character
+				local tChar = Hub.canHarm(target) and target.Character or nil
 				local tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")
 				local tHum = tChar and tChar:FindFirstChild("Humanoid")
 
@@ -2924,19 +3476,19 @@ TargetGroup:AddButton({
 						local grabStartTime = 0
 						local start = tick()
 
-						while tRoot.Parent and tHum.Health > 0 and tick() - start < 0.9 do
-							tRoot.AssemblyLinearVelocity = Vector3.zero
-							tRoot.AssemblyAngularVelocity = Vector3.zero
-							tRoot.Velocity = Vector3.zero
+						while Hub.canHarm(target) and tRoot.Parent and tHum.Health > 0 and tick() - start < 0.9 do
+							if Hub.canAffect(tRoot) then tRoot.AssemblyLinearVelocity = Vector3.zero end
+							if Hub.canAffect(tRoot) then tRoot.AssemblyAngularVelocity = Vector3.zero end
+							if Hub.canAffect(tRoot) then tRoot.Velocity = Vector3.zero end
 
 							if not dragging then
-								myRoot.CFrame = tRoot.CFrame
+								if Hub.canAffect(tRoot) then myRoot.CFrame = tRoot.CFrame end
 								myRoot.Velocity = Vector3.zero
 								pcall(function()
-									tHum.PlatformStand = true
-									tHum.Sit = true
-									GE.SetNetworkOwner:FireServer(tRoot, CFrame.new(myRoot.Position, tRoot.Position))
-									GE.CreateGrabLine:FireServer(tRoot, Vector3.zero, tRoot.Position, false)
+									if Hub.canAffect(tHum) then tHum.PlatformStand = true end
+									if Hub.canAffect(tHum) then tHum.Sit = true end
+									Hub.fire(GE.SetNetworkOwner, tRoot, CFrame.new(myRoot.Position, tRoot.Position))
+									Hub.fire(GE.CreateGrabLine, tRoot, Vector3.zero, tRoot.Position, false)
 								end)
 
 								if grabStartTime == 0 then
@@ -2950,14 +3502,14 @@ TargetGroup:AddButton({
 								myRoot.CFrame = savedPos
 								myRoot.Velocity = Vector3.zero
 								local lockPos = savedPos * lockOffset
-								tRoot.CFrame = lockPos
-								tRoot.Velocity = Vector3.zero
-								tRoot.RotVelocity = Vector3.zero
-								tHum.PlatformStand = true
-								tHum.Sit = false
+								if Hub.canAffect(tRoot) then tRoot.CFrame = lockPos end
+								if Hub.canAffect(tRoot) then tRoot.Velocity = Vector3.zero end
+								if Hub.canAffect(tRoot) then tRoot.RotVelocity = Vector3.zero end
+								if Hub.canAffect(tHum) then tHum.PlatformStand = true end
+								if Hub.canAffect(tHum) then tHum.Sit = false end
 								pcall(function()
-									GE.SetNetworkOwner:FireServer(tRoot, lockPos)
-									GE.CreateGrabLine:FireServer(tRoot, Vector3.zero, tRoot.Position, false)
+									Hub.fire(GE.SetNetworkOwner, tRoot, lockPos)
+									Hub.fire(GE.CreateGrabLine, tRoot, Vector3.zero, tRoot.Position, false)
 								end)
 							end
 
@@ -2965,9 +3517,9 @@ TargetGroup:AddButton({
 						end
 
 						pcall(function()
-							tHum.PlatformStand = false
-							tHum.Sit = false
-							GE.DestroyGrabLine:FireServer(tRoot)
+							if Hub.canAffect(tHum) then tHum.PlatformStand = false end
+							if Hub.canAffect(tHum) then tHum.Sit = false end
+							Hub.fire(GE.DestroyGrabLine, tRoot)
 						end)
 					end))
 				end
@@ -3013,7 +3565,7 @@ TargetGroup:AddButton({
 			local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
 			if not myRoot then return end
 
-			local tChar = target.Character
+			local tChar = Hub.canHarm(target) and target.Character or nil
 			local tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")
 			local tHum = tChar and tChar:FindFirstChild("Humanoid")
 			if not (tRoot and tHum and tHum.Health > 0) then return end
@@ -3023,20 +3575,20 @@ TargetGroup:AddButton({
 			local grabStartTime = 0
 
 			local start = tick()
-			while tRoot.Parent and tHum.Health > 0 and tick() - start < 0.9 do
-				tRoot.AssemblyLinearVelocity = Vector3.zero
-				tRoot.AssemblyAngularVelocity = Vector3.zero
-				tRoot.Velocity = Vector3.zero
+			while Hub.canHarm(target) and tRoot.Parent and tHum.Health > 0 and tick() - start < 0.9 do
+				if Hub.canAffect(tRoot) then tRoot.AssemblyLinearVelocity = Vector3.zero end
+				if Hub.canAffect(tRoot) then tRoot.AssemblyAngularVelocity = Vector3.zero end
+				if Hub.canAffect(tRoot) then tRoot.Velocity = Vector3.zero end
 
 				if not dragging then
-					myRoot.CFrame = tRoot.CFrame
+					if Hub.canAffect(tRoot) then myRoot.CFrame = tRoot.CFrame end
 					myRoot.Velocity = Vector3.zero
 
 					pcall(function()
-						tHum.PlatformStand = true
-						tHum.Sit = true
-						GE.SetNetworkOwner:FireServer(tRoot, CFrame.new(myRoot.Position, tRoot.Position))
-						GE.CreateGrabLine:FireServer(tRoot, Vector3.zero, tRoot.Position, false)
+						if Hub.canAffect(tHum) then tHum.PlatformStand = true end
+						if Hub.canAffect(tHum) then tHum.Sit = true end
+						Hub.fire(GE.SetNetworkOwner, tRoot, CFrame.new(myRoot.Position, tRoot.Position))
+						Hub.fire(GE.CreateGrabLine, tRoot, Vector3.zero, tRoot.Position, false)
 					end)
 
 					if grabStartTime == 0 then
@@ -3053,16 +3605,16 @@ TargetGroup:AddButton({
 
 					local lockPos = savedPos * CFrame.new(0, 17, 0)
 
-					tRoot.CFrame = lockPos
-					tRoot.Velocity = Vector3.zero
-					tRoot.RotVelocity = Vector3.zero
+					if Hub.canAffect(tRoot) then tRoot.CFrame = lockPos end
+					if Hub.canAffect(tRoot) then tRoot.Velocity = Vector3.zero end
+					if Hub.canAffect(tRoot) then tRoot.RotVelocity = Vector3.zero end
 
-					tHum.PlatformStand = true
-					tHum.Sit = false
+					if Hub.canAffect(tHum) then tHum.PlatformStand = true end
+					if Hub.canAffect(tHum) then tHum.Sit = false end
 
 					pcall(function()
-						GE.SetNetworkOwner:FireServer(tRoot, lockPos)
-						GE.CreateGrabLine:FireServer(tRoot, Vector3.zero, tRoot.Position, false)
+						Hub.fire(GE.SetNetworkOwner, tRoot, lockPos)
+						Hub.fire(GE.CreateGrabLine, tRoot, Vector3.zero, tRoot.Position, false)
 					end)
 				end
 
@@ -3070,9 +3622,9 @@ TargetGroup:AddButton({
 			end
 
 			pcall(function()
-				tHum.PlatformStand = false
-				tHum.Sit = false
-				GE.DestroyGrabLine:FireServer(tRoot)
+				if Hub.canAffect(tHum) then tHum.PlatformStand = false end
+				if Hub.canAffect(tHum) then tHum.Sit = false end
+				Hub.fire(GE.DestroyGrabLine, tRoot)
 			end)
 
 			if myRoot then
@@ -3096,22 +3648,23 @@ TargetGroup:AddToggle("DestroyAntiKickToggle", {
 				local SetNetOwner = ReplicatedStorage.GrabEvents.SetNetworkOwner
 
 				local function invis_touch(part, cf)
-					SetNetOwner:FireServer(part, cf)
+					Hub.fire(SetNetOwner, part, cf)
 				end
 
 				local function CheckAndYeet(toy)
+                    if not Hub.canAffect(toy) then return end
 					local part = toy:FindFirstChild("SoundPart")
 					if part then
 						invis_touch(part, part.CFrame)
-						if part:FindFirstChild("PartOwner") and part.PartOwner.Value == Player.Name then
-							part.CFrame = CFrame.new(0, 1000, 0)
+						if Hub.canAffect(part) and part:FindFirstChild("PartOwner") and part.PartOwner.Value == Player.Name then
+							if Hub.canAffect(part) then part.CFrame = CFrame.new(0, 1000, 0) end
 						end
 					end
 				end
 
 				while antiAntiKickActive do
 					local target = SelectedPlayer
-					if target then
+					if Hub.canHarm(target) then
 						local spawned = workspace:FindFirstChild(target.Name.."SpawnedInToys")
 						if spawned then
 							if spawned:FindFirstChild("NinjaKunai") then
@@ -3140,7 +3693,7 @@ TargetGroup:AddToggle("AntiAntiInputLag", {
 	Text = "Anti Anti Input Lag",
 	Default = false,
 	Callback = function(on)
-		SaveManager:Save("AutoSave")
+		Hub.requestSave()
 		antiAntiLagEnabled = on
 
 		if not on then
@@ -3162,7 +3715,7 @@ TargetGroup:AddToggle("AntiAntiInputLag", {
 				end
 			end
 
-			workspace.DescendantAdded:Connect(function(obj)
+			Hub.connect(workspace.DescendantAdded, function(obj)
 				if obj.Name == "FoodHamburger" and obj:IsA("Model") then
 					task.spawn(function()
 						local hp = obj:WaitForChild("HoldPart", 3)
@@ -3179,16 +3732,17 @@ TargetGroup:AddToggle("AntiAntiInputLag", {
 					if not b or not b.Parent or not b:FindFirstChild("HoldPart") then
 						table.remove(burgers, i)
 					else
-						local hp = b.HoldPart
+						if not Hub.canAffect(b) then continue end
+                        local hp = b.HoldPart
 
 						pcall(function()
-							hp.HoldItemRemoteFunction:InvokeServer(b, char)
+							Hub.invoke(hp.HoldItemRemoteFunction, b, char)
 						end)
 
 						task.wait()
 
 						pcall(function()
-							hp.DropItemRemoteFunction:InvokeServer(b, CFrame.new(hrp.Position + Vector3.new(0,-2000,0)), Vector3.new(0,0,0))
+							Hub.invoke(hp.DropItemRemoteFunction, b, CFrame.new(hrp.Position + Vector3.new(0,-2000,0)), Vector3.new(0,0,0))
 						end)
 					end
 				end
@@ -3199,20 +3753,81 @@ TargetGroup:AddToggle("AntiAntiInputLag", {
 	end
 })
 
--- Whitelist System
+-- Whitelist System: selected players are protected, never automatically targeted.
+do
+local refreshing = false
+local function labelFor(player)
+    return player.DisplayName .. " (@" .. player.Name .. ") [" .. player.UserId .. "]"
+end
+local function valuesAndSelected()
+    local values, selected, seen = {}, {}, {}
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= Player then
+            local id = tostring(player.UserId)
+            local label = labelFor(player)
+            table.insert(values, label); seen[id] = true
+            if Hub.manualWhitelist[id] or Hub.manualWhitelist["name:" .. player.Name:lower()] then
+                Hub.manualWhitelist["name:" .. player.Name:lower()] = nil
+                Hub.manualWhitelist[id] = label
+                selected[label] = true
+            end
+        end
+    end
+    for id, label in pairs(Hub.manualWhitelist) do
+        if not seen[id] then table.insert(values, label); selected[label] = true end
+    end
+    table.sort(values)
+    return values, selected
+end
+local values, initial = valuesAndSelected()
+refreshing = true
 WhitelistGroup:AddDropdown("MultiWhitelist", {
-	Values = getPlayerList(),
-	Default = {},
-	Multi = true,
-	Text = "whitelist people",
+    Values = values, Default = {}, Multi = true, Text = "Whitelist people (protected)",
+    Callback = function(selection)
+        if refreshing then return end
+        local manual = {}
+        for label, chosen in pairs(selection) do
+            if chosen then
+                local id = label:match("%[(%d+)%]$")
+                local name = label:match("%(@?(.-)%)")
+                local player = name and Players:FindFirstChild(name)
+                if not id and player then id = tostring(player.UserId) end
+                if id then manual[id] = label
+                elseif name then manual["name:" .. name:lower()] = label end
+            end
+        end
+        Hub.manualWhitelist = manual
+        Hub.reconcileProtection()
+        Hub.queueSafetySave()
+        Hub.requestSave()
+    end,
 })
-
-WhitelistGroup:AddButton({
-	Text = "refresh list",
-	Func = function()
-		Options.MultiWhitelist:SetValues(getPlayerList())
-	end
+Hub.refreshWhitelistUI = function()
+    local values, selected = valuesAndSelected()
+    refreshing = true
+    Options.MultiWhitelist:SetValues(values)
+    Options.MultiWhitelist:SetValue(selected)
+    refreshing = false
+end
+Hub.refreshWhitelistUI()
+WhitelistGroup:AddToggle("WhitelistFriends", {
+    Text = "Whitelist friends", Default = true,
+    Callback = function(on)
+        Hub.whitelistFriends = on
+        table.clear(Hub.friendCache)
+        Hub.reconcileProtection()
+        if on then for _, player in ipairs(Players:GetPlayers()) do Hub.checkFriend(player) end end
+        Hub.requestSave()
+    end,
 })
+WhitelistGroup:AddButton({Text = "Refresh list / friend checks", Func = function()
+    table.clear(Hub.friendCache)
+    Hub.refreshWhitelistUI()
+    if Hub.whitelistFriends then for _, player in ipairs(Players:GetPlayers()) do Hub.checkFriend(player) end end
+end})
+WhitelistGroup:AddLabel("Protected players are skipped by hub actions. Pending friend checks also block targeting.", true)
+WhitelistGroup:AddLabel("Roblox may cache friendship results. Manual selections apply immediately.", true)
+end
 
 -- Joined Notify
 local notifyActive = false
@@ -3221,7 +3836,7 @@ WhitelistGroup:AddToggle("JoinedNotifyBtn", {
 	Text = "Target Joined Notify",
 	Default = false,
 	Callback = function(on)
-		SaveManager:Save("AutoSave")
+		Hub.requestSave()
 		notifyActive = on
 
 		if on then
@@ -3229,23 +3844,13 @@ WhitelistGroup:AddToggle("JoinedNotifyBtn", {
 
 			if notifyConnection then notifyConnection:Disconnect() end
 
-			notifyConnection = Players.PlayerAdded:Connect(function(newPlayer)
+			notifyConnection = Hub.connect(Players.PlayerAdded, function(newPlayer)
 				if not notifyActive then return end
 
 				local detected = false
 				local reason = ""
 
-				local whitelistTable = Options.MultiWhitelist.Value
-				for nameString, isSelected in pairs(whitelistTable) do
-					if isSelected then
-						local actualName = nameString:match("%((.-)%)")
-						if actualName == newPlayer.Name then
-							detected = true
-							reason = "[Whitelist]"
-							break
-						end
-					end
-				end
+                if Hub.isProtected(newPlayer) then detected = true; reason = "[Protected]" end
 
 				if not detected and Options.KickPlayerDropdown and Options.KickPlayerDropdown.Value then
 					local selection = Options.KickPlayerDropdown.Value
@@ -3259,8 +3864,8 @@ WhitelistGroup:AddToggle("JoinedNotifyBtn", {
 
 				if detected then
 					notify("Target Returned!" .. reason .. " | Player: " .. newPlayer.Name, 8)
-					SelectedPlayer = newPlayer
-					local sound = Instance.new("Sound", workspace)
+					if Hub.canHarm(newPlayer) then SelectedPlayer = newPlayer end
+					local sound = Hub.new("Sound", workspace)
 					sound.SoundId = "rbxassetid://4590662766"
 					sound.Volume = 2
 					sound:Play()
@@ -3278,42 +3883,27 @@ local respawnNotifyActive = false
 local respawnConnections = {}
 
 local function isTrackedPlayer(player)
-	local whitelistTable = Options.MultiWhitelist.Value
-
-	-- Whitelist check
-	for nameString, isSelected in pairs(whitelistTable) do
-		if isSelected then
-			local actualName = nameString:match("%((.-)%)")
-			if actualName == player.Name then
-				return true, "[Whitelist]"
-			end
-		end
-	end
-
-	-- Main target check
-	if Options.KickPlayerDropdown and Options.KickPlayerDropdown.Value then
-		local selectedName = Options.KickPlayerDropdown.Value:match("%((.-)%)")
-		if selectedName == player.Name then
-			return true, "[Main Target]"
-		end
-	end
-
-	return false, nil
+    if Hub.isProtected(player) then return true, "[Protected]" end
+    if Options.KickPlayerDropdown and Options.KickPlayerDropdown.Value then
+        local name = Options.KickPlayerDropdown.Value:match("%((.-)%)")
+        if name == player.Name then return true, "[Main Target]" end
+    end
+    return false, nil
 end
 
 local function trackRespawn(player)
 	if respawnConnections[player] then return end
 
-	respawnConnections[player] = player.CharacterAdded:Connect(function()
+	respawnConnections[player] = Hub.connect(player.CharacterAdded, function()
 		if not respawnNotifyActive then return end
 
 		local tracked, reason = isTrackedPlayer(player)
 		if not tracked then return end
 
 		notify("Target Respawned! " .. reason .. " | Player: " .. player.Name, 8)
-		SelectedPlayer = player
+		if Hub.canHarm(player) then SelectedPlayer = player end
 
-		local sound = Instance.new("Sound")
+		local sound = Hub.new("Sound")
 		sound.SoundId = "rbxassetid://4590662766"
 		sound.Volume = 2
 		sound.Parent = workspace
@@ -3326,7 +3916,7 @@ WhitelistGroup:AddToggle("RespawnNotifyBtn", {
 	Text = "Target Respawn Notify",
 	Default = false,
 	Callback = function(on)
-		SaveManager:Save("AutoSave")
+		Hub.requestSave()
 		respawnNotifyActive = on
 
 		if on then
@@ -3340,7 +3930,7 @@ WhitelistGroup:AddToggle("RespawnNotifyBtn", {
 			end
 
 			-- Hook new players too
-			respawnConnections["_PlayerAdded"] = Players.PlayerAdded:Connect(function(plr)
+			respawnConnections["_PlayerAdded"] = Hub.connect(Players.PlayerAdded, function(plr)
 				trackRespawn(plr)
 			end)
 		else
@@ -3362,7 +3952,7 @@ AuraGroup:AddToggle("Deathaura", {
 	Text = "Death Aura",
 	Default = false,
 	Callback = function(on)
-		SaveManager:Save("AutoSave")
+		Hub.requestSave()
 		deathAuraEnabled = on
 		if on then
 			task.spawn(function()
@@ -3378,13 +3968,13 @@ AuraGroup:AddToggle("Deathaura", {
 						-- Find all players within 50 studs
 						for _, target in pairs(PS:GetPlayers()) do
 							if not deathAuraEnabled then break end
-							if target == Player then continue end
+							if not Hub.canHarm(target) then continue end
 
-							if not target or not target.Parent or not target.Character then
+							if not Hub.canHarm(target) or not target.Character then
 								continue
 							end
 
-							local tChar = target.Character
+							local tChar = Hub.canHarm(target) and target.Character or nil
 							local tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")
 							local tHum = tChar and tChar:FindFirstChild("Humanoid")
 
@@ -3395,16 +3985,16 @@ AuraGroup:AddToggle("Deathaura", {
 								if distance <= 50 then
 									-- Death counter action
 									local counterAction = function()
-										if tHum then
+										if tHum and Hub.canHarm(target) then
 											CreateSkyVelocity(tRoot)
 											for _ = 0, 20 do
-												tHum.BreakJointsOnDeath = false
-												tHum:ChangeState(Enum.HumanoidStateType.Dead)
-												tHum.Jump = true
-												tHum.Sit = true
+												if Hub.canAffect(tHum) then tHum.BreakJointsOnDeath = false end
+												if Hub.canAffect(tHum) then tHum:ChangeState(Enum.HumanoidStateType.Dead) end
+												if Hub.canAffect(tHum) then tHum.Jump = true end
+												if Hub.canAffect(tHum) then tHum.Sit = true end
 											end
 											task.wait()
-											GE.DestroyGrabLine:FireServer(tRoot)
+											Hub.fire(GE.DestroyGrabLine, tRoot)
 										end
 									end
 
@@ -3454,14 +4044,18 @@ GrabGroup:AddToggle("ThrowStrengthToggle", {
 	Default = false,
 	Callback = function(enabled)
 		if enabled then
-			strengthConnection = workspace.ChildAdded:Connect(function(model)
+			strengthConnection = Hub.connect(workspace.ChildAdded, function(model)
 				if model.Name == "GrabParts" then
-					local partToImpulse = model.GrabPart.WeldConstraint.Part1
-					if partToImpulse then
-						local velocityObj = Instance.new("BodyVelocity", partToImpulse)
-						model:GetPropertyChangedSignal("Parent"):Connect(function()
+					local grab = model:WaitForChild("GrabPart", 2)
+                    local weld = grab and grab:WaitForChild("WeldConstraint", 2)
+                    if not weld or not model.Parent then return end
+                    local partToImpulse = weld.Part1
+					if partToImpulse and Hub.canAffect(partToImpulse) then
+						local velocityObj = Hub.new("BodyVelocity", partToImpulse)
+                        velocityObj.MaxForce = Vector3.zero
+						Hub.connect(model:GetPropertyChangedSignal("Parent"), function()
 							if not model.Parent then
-								if UserInputService:GetLastInputType() == Enum.UserInputType.MouseButton2 then
+								if Hub.canAffect(partToImpulse) and UserInputService:GetLastInputType() == Enum.UserInputType.MouseButton2 then
 									velocityObj.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
 									velocityObj.Velocity = workspace.CurrentCamera.CFrame.LookVector * _G.strength
 									game:GetService("Debris"):AddItem(velocityObj, 1)
@@ -3486,7 +4080,7 @@ local noclipConnection
 local function startNoclipGrab()
 	if noclipConnection then return end
 
-	noclipConnection = workspace.ChildAdded:Connect(function(v)
+	noclipConnection = Hub.connect(workspace.ChildAdded, function(v)
 		if not noclipGrabEnabled then return end
 		if not (v:IsA("Model") and v.Name == "GrabParts") then return end
 
@@ -3497,7 +4091,7 @@ local function startNoclipGrab()
 			local weld = grabPart and grabPart:FindFirstChild("WeldConstraint")
 			local targetChar = weld and weld.Part1 and weld.Part1.Parent
 
-			if not (grabPart and targetChar and targetChar:IsA("Model")) then
+			if not (grabPart and targetChar and targetChar:IsA("Model")) or not Hub.canAffect(targetChar) then
 				return
 			end
 
@@ -3508,13 +4102,14 @@ local function startNoclipGrab()
 				if d:IsA("BasePart") and not d.Anchored then
 					table.insert(parts, d)
 					originalCollision[d] = d.CanCollide
+                    Hub.backup(d, {"CanCollide"})
 				end
 			end
 
-			while noclipGrabEnabled and grabPart.Parent do
+			while noclipGrabEnabled and Hub.canAffect(targetChar) and grabPart.Parent do
 				for _, part in ipairs(parts) do
 					if part and part.Parent and not part.Anchored then
-						part.CanCollide = false
+						if Hub.canAffect(part) then part.CanCollide = false end
 					end
 				end
 				task.wait(0.2)
@@ -3522,7 +4117,8 @@ local function startNoclipGrab()
 
 			for part, state in pairs(originalCollision) do
 				if part and part.Parent then
-					part.CanCollide = state
+					if Hub.canAffect(part) then part.CanCollide = state end
+                    Hub.propertyBackup[part] = nil
 				end
 			end
 		end)
@@ -3540,7 +4136,7 @@ GrabGroup:AddToggle("NoclipGrabToggle", {
 	Text = "Noclip Grab",
 	Default = false,
 	Callback = function(on)
-		SaveManager:Save("AutoSave")
+		Hub.requestSave()
 		noclipGrabEnabled = on
 		if on then
 			startNoclipGrab()
@@ -3557,7 +4153,7 @@ local masslessConnection
 local function startMasslessGrab()
 	if masslessConnection then return end
 
-	masslessConnection = workspace.ChildAdded:Connect(function(v)
+	masslessConnection = Hub.connect(workspace.ChildAdded, function(v)
 		if not masslessGrabEnabled then return end
 		if not (v:IsA("Model") and v.Name == "GrabParts") then return end
 
@@ -3571,22 +4167,24 @@ local function startMasslessGrab()
 				task.wait(0.05)
 			end
 
-			if not dragPart then return end
+			if not dragPart or not Hub.canAffect(v) then return end
 
 			local alignOri = dragPart:FindFirstChild("AlignOrientation")
 			local alignPos = dragPart:FindFirstChild("AlignPosition")
 			if not (alignOri and alignPos) then return end
 
-			local oriTorque = alignOri.MaxTorque
+			Hub.backup(alignOri, {"MaxTorque", "Responsiveness"})
+            Hub.backup(alignPos, {"MaxForce", "Responsiveness"})
+            local oriTorque = alignOri.MaxTorque
 			local oriOriResp = alignOri.Responsiveness
 			local oriForce = alignPos.MaxForce
 			local oriPosResp = alignPos.Responsiveness
 
-			while masslessGrabEnabled and v.Parent do
-				alignOri.MaxTorque = 1e46
-				alignOri.Responsiveness = 20099
-				alignPos.MaxForce = 1e51
-				alignPos.Responsiveness = 20099
+			while masslessGrabEnabled and Hub.canAffect(v) and v.Parent do
+				alignOri.MaxTorque = 1e9
+				alignOri.Responsiveness = 200
+				alignPos.MaxForce = 1e9
+				alignPos.Responsiveness = 200
 				task.wait(0.25)
 			end
 
@@ -3613,7 +4211,7 @@ GrabGroup:AddToggle("MasslessGrabToggle", {
 	Text = "Massless Grab",
 	Default = false,
 	Callback = function(on)
-		SaveManager:Save("AutoSave")
+		Hub.requestSave()
 		masslessGrabEnabled = on
 		if on then
 			startMasslessGrab()
@@ -3636,81 +4234,75 @@ function GetPlayerCharacter()
 	end
 end
 
-IncreaseLineExtend = 0
-LastSet = 0
-UserInputService.InputChanged:Connect(function(inputObject)
-	if inputObject.UserInputType == Enum.UserInputType.MouseWheel then
-		if pcDistance < 11 then
-			pcDistance = 11
-		end
-		if inputObject.Position.Z <= 0 then
-			if inputObject.Position.Z < 0 then
-				pcDistance = pcDistance - IncreaseLineExtend
-			end
-		else
-			pcDistance = pcDistance + IncreaseLineExtend
-		end
-	end
-end)
-
-local workspaceService = game:GetService("Workspace")
+do
+local IncreaseLineExtend = 5
+local LastSet = 5
+local pcDistance = 11
+local extendEnabled = false
 local extendconnection
+local extendGeneration = 0
+local extendActive = {}
+local function restoreExtend(model)
+    local state = extendActive[model]
+    if not state then return end
+    pcall(function() state.original.Enabled = state.enabled end)
+    pcall(function() state.clone:Destroy() end)
+    extendActive[model] = nil
+end
+Hub.cleanup(function() for model in pairs(extendActive) do restoreExtend(model) end end)
+Hub.connect(UserInputService.InputChanged, function(input)
+    if not extendEnabled or UserInputService:GetFocusedTextBox() then return end
+    if input.UserInputType == Enum.UserInputType.MouseWheel then
+        pcDistance = math.clamp(pcDistance + input.Position.Z * IncreaseLineExtend, 11, 1000)
+    end
+end)
+local function extendGrab(model)
+    if not extendEnabled or model.Name ~= "GrabParts" or not model:IsA("Model") then return end
+    task.spawn(function()
+        local generation = extendGeneration
+        local drag = model:WaitForChild("DragPart", 2)
+        local align = drag and drag:FindFirstChildOfClass("AlignPosition")
+        if not Hub.canAffect(model) or not drag or not align or not extendEnabled or generation ~= extendGeneration or not model.Parent then return end
+        local clone = drag:Clone()
+        local cloneAlign = clone:FindFirstChildOfClass("AlignPosition")
+        local attachment = clone:FindFirstChild("DragAttach")
+        if not cloneAlign or not attachment then clone:Destroy(); return end
+        clone.Name = "DragPart1"
+        cloneAlign.Attachment1 = attachment
+        cloneAlign.Enabled = true
+        local orientation = clone:FindFirstChildOfClass("AlignOrientation")
+        if orientation then orientation.Enabled = false end
+        extendActive[model] = {original = align, enabled = align.Enabled, clone = clone}
+        align.Enabled = false
+        clone.Parent = model
+        local cam = workspace.CurrentCamera
+        if cam then pcDistance = math.clamp((clone.Position - cam.CFrame.Position).Magnitude, 11, 1000) end
+        while extendEnabled and Hub.canAffect(model) and generation == extendGeneration and model.Parent and clone.Parent do
+            cam = workspace.CurrentCamera
+            if cam then clone.Position = cam.CFrame.Position + cam.CFrame.LookVector * pcDistance end
+            RunService.Heartbeat:Wait()
+        end
+        restoreExtend(model)
+    end)
+end
+GrabGroup:AddToggle("ExtendToggle", {Text = "Further Extend", Default = false,
+    Callback = function(on)
+        extendEnabled = on
+        extendGeneration += 1
+        if extendconnection then extendconnection:Disconnect(); extendconnection = nil end
+        for model in pairs(extendActive) do restoreExtend(model) end
+        if on then
+            IncreaseLineExtend = LastSet
+            extendconnection = Hub.connect(workspace.ChildAdded, extendGrab)
+            local existing = workspace:FindFirstChild("GrabParts")
+            if existing then extendGrab(existing) end
+        end
+        Hub.requestSave()
+    end})
+GrabGroup:AddSlider("extendvalue", {Text = "Extend Amount", Default = 5, Min = 1, Max = 100, Rounding = 0,
+    Callback = function(value) LastSet = value; IncreaseLineExtend = value; Hub.requestSave() end})
 
-GrabGroup:AddToggle("ExtendToggle", {
-	Text = "Furthur Extend",
-	Default = false,
-	Callback = function(Value)
-		if Value then
-			IncreaseLineExtend = LastSet
-			extendconnection =	workspaceService.ChildAdded:Connect(function(potentialGrabPart)
-				if potentialGrabPart.Name == "GrabParts" and (potentialGrabPart:IsA("Model")) then
-					if Value and (UserInputService.MouseEnabled and not IsMobile()) then
-
-						local grabPartModel = potentialGrabPart
-						GetPlayerCharacter()
-						local grabPartName = grabPartModel
-						grabPartModel.WaitForChild(grabPartName, "GrabPart")
-						local dragPartName = grabPartModel
-						grabPartModel.WaitForChild(dragPartName, "DragPart")
-						local dragPartClone = grabPartModel.DragPart:Clone()
-						dragPartClone.Name = "DragPart1"
-						dragPartClone.AlignPosition.Attachment1 = dragPartClone.DragAttach
-						dragPartClone.Parent = grabPartModel
-						pcDistance = (dragPartClone.Position - workspaceService.CurrentCamera.CFrame.Position).Magnitude
-						dragPartClone.AlignOrientation.Enabled = false
-						grabPartModel.DragPart.AlignPosition.Enabled = false
-						task.spawn(function()
-							while grabPartModel.Parent do
-								dragPartClone.Position = workspaceService.Camera.CFrame.Position + workspaceService.Camera.CFrame.LookVector * pcDistance
-								task.wait()
-							end
-							pcDistance = 0
-						end)
-
-
-					end
-
-				end
-			end)
-		end
-		if not Value then
-			if extendconnection then
-				extendconnection:Disconnect()
-			end
-		end
-	end
-
-})
-
-GrabGroup:AddSlider("extendvalue", {
-	Text = "Extend Amount",
-	Default = 5,
-	Min = 1,
-	Max = 100,
-	Rounding = 0,
-	Callback = function(Value) IncreaseLineExtend = Value LastSet = Value end
-})
-
+end
 
 -- Kill Grab
 local killGrabEnabled = false
@@ -3719,7 +4311,7 @@ local grabConnection
 local function startKillGrab()
 	if grabConnection then return end
 
-	grabConnection = workspace.ChildAdded:Connect(function(v)
+	grabConnection = Hub.connect(workspace.ChildAdded, function(v)
 		if not killGrabEnabled then return end
 		if not (v:IsA("Model") and v.Name == "GrabParts") then return end
 
@@ -3730,7 +4322,7 @@ local function startKillGrab()
 			local weld = grabPart and grabPart:FindFirstChild("WeldConstraint")
 			local targetChar = weld and weld.Part1 and weld.Part1.Parent
 
-			if not (grabPart and targetChar and targetChar ~= Player.Character) then
+			if not (grabPart and targetChar and targetChar ~= Player.Character) or not Hub.canAffect(targetChar) then
 				return
 			end
 
@@ -3740,9 +4332,9 @@ local function startKillGrab()
 
 			if not (hum and root and myRoot) then return end
 
-			while killGrabEnabled and grabPart.Parent and hum.Health > 0 do
+			while killGrabEnabled and Hub.canAffect(targetChar) and grabPart.Parent and hum.Health > 0 do
 				pcall(function()
-					ReplicatedStorage.GrabEvents.SetNetworkOwner:FireServer(root, myRoot.CFrame)
+					Hub.fire(ReplicatedStorage.GrabEvents.SetNetworkOwner, root, myRoot.CFrame)
 					hum.BreakJointsOnDeath = false
 					hum:ChangeState(Enum.HumanoidStateType.Dead)
 					hum.Health = 0
@@ -3765,7 +4357,7 @@ GrabGroup:AddToggle("KillGrabToggle", {
 	Text = "Kill Grab",
 	Default = false,
 	Callback = function(on)
-		SaveManager:Save("AutoSave")
+		Hub.requestSave()
 		killGrabEnabled = on
 		if on then
 			startKillGrab()
@@ -3777,6 +4369,8 @@ GrabGroup:AddToggle("KillGrabToggle", {
 
 -- Misc Tab
 local MiscGroup = Tabs.Misc:AddLeftGroupbox("Miscellaneous")
+Hub.playerListOriginal = StarterGui:GetCoreGuiEnabled(Enum.CoreGuiType.PlayerList)
+Hub.cleanup(function() StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, Hub.playerListOriginal) end)
 local mouse = Player:GetMouse()
 local tpToolConn
 
@@ -3787,7 +4381,7 @@ MiscGroup:AddToggle("TPToggle", {
 	Callback = function(Value)
 		if Value then
 			if tpToolConn then tpToolConn:Disconnect() end
-			tpToolConn = UserInputService.InputBegan:Connect(function(input, gameProcessed)
+			tpToolConn = Hub.connect(UserInputService.InputBegan, function(input, gameProcessed)
 				if gameProcessed then return end
 				if input.KeyCode == Enum.KeyCode.Z then
 					local character = Player.Character
@@ -3810,57 +4404,57 @@ MiscGroup:AddToggle("PlayerList", {
 	Default = false,
 	Callback = function(Value)
 		if Value then
-			StarterGui:SetCoreGuiEnabled(0,true)
+			StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList,true)
 		else
-			StarterGui:SetCoreGuiEnabled(0,false)
+			StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList,false)
 		end
 	end
 })
 
 
-local UIS = game:GetService("UserInputService")
-
-
 local enabled = false
-
+local freeMouseGui
+local mouseOriginal
 local function setFreeMouse(on)
-	if enabled == false then
-
-	enabled =  on
-	UserInputService.MouseBehavior = Enum.MouseBehavior.Default
-	UserInputService.MouseIconEnabled = true
-	local plrGui = game.Players.LocalPlayer:WaitForChild("PlayerGui")
-
-	local screenGui = Instance.new("ScreenGui", plrGui)
-
-	local txtButton = Instance.new("TextButton")
-	txtButton.BackgroundTransparency = 1
-	txtButton.Size = UDim2.new(0, 0 , 0 , 0)
-
-	txtButton.Modal = true
-
-	txtButton.Parent = screenGui
-	else
-		enabled = on
-		UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
-		UserInputService.MouseIconEnabled = false
-		game.Players.LocalPlayer:WaitForChild("PlayerGui").ScreenGui:Destroy()
-	end
+    if on == enabled then return end
+    enabled = on
+    if on then
+        mouseOriginal = {UserInputService.MouseBehavior, UserInputService.MouseIconEnabled}
+        freeMouseGui = Hub.new("ScreenGui")
+        freeMouseGui.Name = "ArrivaCoreMouseUnlock"
+        freeMouseGui.ResetOnSpawn = false
+        local button = Hub.new("TextButton")
+        button.BackgroundTransparency = 1
+        button.Size = UDim2.fromOffset(1, 1)
+        button.Text = ""
+        button.Modal = true
+        button.Parent = freeMouseGui
+        freeMouseGui.Parent = Player:FindFirstChildOfClass("PlayerGui")
+        UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+        UserInputService.MouseIconEnabled = true
+    else
+        if freeMouseGui then freeMouseGui:Destroy(); freeMouseGui = nil end
+        if mouseOriginal then
+            UserInputService.MouseBehavior = mouseOriginal[1]
+            UserInputService.MouseIconEnabled = mouseOriginal[2]
+            mouseOriginal = nil
+        end
+    end
 end
-
-
-UIS.InputBegan:Connect(function(input, gp)
-	if gp then return end
-	if input.KeyCode == Enum.KeyCode.F then
-		setFreeMouse(not enabled)
-	end
+Hub.cleanup(function() setFreeMouse(false) end)
+Hub.connect(UserInputService.InputBegan, function(input, processed)
+    if processed or UserInputService:GetFocusedTextBox() then return end
+    if input.KeyCode == Enum.KeyCode.F then setFreeMouse(not enabled) end
 end)
 
 -- Water Walk
 local waterParts = {}
 task.spawn(function()
 	if workspace:FindFirstChild("Map") and workspace.Map:FindFirstChild("AlwaysHereTweenedObjects") then
-		local oceanModel = workspace.Map.AlwaysHereTweenedObjects.Ocean.Object.ObjectModel
+		local ocean = workspace.Map.AlwaysHereTweenedObjects:FindFirstChild("Ocean")
+        local object = ocean and ocean:FindFirstChild("Object")
+        local oceanModel = object and object:FindFirstChild("ObjectModel")
+        if not oceanModel then return end
 		for _, v in pairs(oceanModel:GetChildren()) do
 			if v:IsA("Part") or v:IsA("UnionOperation") or v:IsA("BasePart") or v:IsA("MeshPart") then
 				table.insert(waterParts, {part = v, originalCollide = v.CanCollide})
@@ -3873,9 +4467,9 @@ MiscGroup:AddToggle("WaterWalkToggle", {
 	Text = "water walk",
 	Default = false,
 	Callback = function(on)
-		SaveManager:Save("AutoSave")
+		Hub.requestSave()
 		for _, item in pairs(waterParts) do
-			if item.part then item.part.CanCollide = on end
+			if item.part then item.part.CanCollide = on and true or item.originalCollide end
 		end
 	end
 })
@@ -3899,12 +4493,12 @@ local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Exclude
 
 task.spawn(function()
-	local success, result = pcall(function() return ReplicatedStorage.GamepassEvents.CheckForGamepass:InvokeServer(20837132) end)
+	local success, result = pcall(function() return Hub.invoke(ReplicatedStorage.GamepassEvents.CheckForGamepass, 20837132) end)
 	if success and result then Triggerbot.maxDistance = 29.3 end
 end)
 
 if ReplicatedStorage:FindFirstChild("GamepassEvents") and ReplicatedStorage.GamepassEvents:FindFirstChild("FurtherReachBoughtNotifier") then
-	ReplicatedStorage.GamepassEvents.FurtherReachBoughtNotifier.OnClientEvent:Connect(function() Triggerbot.maxDistance = 29.3 end)
+	Hub.connect(ReplicatedStorage.GamepassEvents.FurtherReachBoughtNotifier.OnClientEvent, function() Triggerbot.maxDistance = 29.3 end)
 end
 
 function Triggerbot:GetTarget()
@@ -3927,7 +4521,7 @@ function Triggerbot:GetTarget()
 	if not result then return end
 	local hit = result.Instance
 	local model = hit:FindFirstAncestorOfClass("Model")
-	if not model or not model:FindFirstChildOfClass("Humanoid") or model == c then return end
+	if not model or not model:FindFirstChildOfClass("Humanoid") or model == c or not Hub.canAffect(model) then return end
 
 	local hum = model:FindFirstChildOfClass("Humanoid")
 	if hum.Health <= 0 then return end
@@ -3966,11 +4560,11 @@ function Triggerbot:OnHeartbeat()
 		return 
 	end
 
-	if self.lastTarget then
+	if self.lastTarget and Hub.canAffect(self.lastTarget) then
 		self.canGrab = false
 		task.spawn(function()
 			task.wait(self.preGrabDelay)
-			pcall(mouse1press)
+			if self.Enabled and self.lastTarget and Hub.canAffect(self.lastTarget) then pcall(mouse1press) end
 			local t0 = tick()
 			repeat 
 				task.wait(0.02) 
@@ -3982,96 +4576,7 @@ function Triggerbot:OnHeartbeat()
 	end
 end
 
--- Packet Lag
-local PacketSpamAmount = 100
-MiscGroup:AddSlider("PacketAmountSlider", {
-	Text = "Packet Lag",
-	Default = 100,
-	Min = 10,
-	Max = 500,
-	Rounding = 0,
-	Callback = function(Value)
-		PacketSpamAmount = Value
-	end
-})
-
-MiscGroup:AddToggle("PacketLagToggle", {
-	Text = "Packet Lag",
-	Default = false,
-	Callback = function(Value)
-		_G.PacketLagActive = Value
-
-		if Value then
-			task.spawn(function()
-				local localName = Player.Name
-				local RS = ReplicatedStorage
-				local GrabEvent = RS:WaitForChild("GrabEvents"):WaitForChild("ExtendGrabLine")
-
-				while _G.PacketLagActive do
-					pcall(function()
-						GrabEvent:FireServer(string.rep("Huh what? why? no fuck off what nah blah meh buh whuhhhhh huh what why nah nah what huh meh blah blah buh whuhhhhhhh huh huh what why nah blah meh buh whuhhhhhhh WHAT huh nah why meh blah buh whuhhhhhhh huh huh huh why why nah nah blah blah meh buh whuhhhhhhh buh buh buh whuhhhhhhh huh what nah why meh blah buh whuhhhhhhh huh nah huh nah WHAT meh blah buh whuhhhhhhh huh what huh what nah nah blah meh buh whuhhhhhhh huh huh huh huh nah blah blah meh buh whuhhhhhhh huh what why nah huh meh blah buh whuhhhhhhh huh huh nah what why blah meh buh whuhhhhhhh huh WHAT nah meh blah buh whuhhhhhhh huh huh huh nah nah nah blah meh buh whuhhhhhhh", PacketSpamAmount))
-					end)
-					task.wait()
-				end
-			end)
-		else
-			_G.PacketLagActive = false
-		end
-	end
-})
-
--- Line Lag
-local LineSpam = false
-local LineSpamAmount = 100
-
-MiscGroup:AddSlider("LineLagAmount", {
-	Text = "Lines / Frame",
-	Default = 100,
-	Min = 1,
-	Max = 500,
-	Rounding = 0,
-	Callback = function(val)
-		LineSpamAmount = val
-	end
-})
-
-MiscGroup:AddToggle("LineLag", {
-	Text = "Line Lag",
-	Default = false,
-	Callback = function(on)
-		SaveManager:Save("AutoSave")
-		LineSpam = on
-		if not on then return end
-
-		task.spawn(function()
-			local RS = ReplicatedStorage
-			local RunService = game:GetService("RunService")
-			local Players = game:GetService("Players")
-			local GE = RS:WaitForChild("GrabEvents")
-			local CreateLine = GE:WaitForChild("CreateGrabLine")
-
-			while LineSpam do
-				for _, target in ipairs(Players:GetPlayers()) do
-					if not LineSpam then break end
-					if target == Player then continue end
-
-					local char = target.Character
-					local root = char and char:FindFirstChild("HumanoidRootPart")
-					if root then
-						for i = 1, LineSpamAmount do
-							if not LineSpam then break end
-							pcall(function()
-								CreateLine:FireServer(root, Vector3.zero, root.Position, false)
-							end)
-						end
-					end
-				end
-
-				RunService.Heartbeat:Wait()
-			end
-		end)
-	end
-})
+-- Network flooders intentionally excluded from this maintenance revision.
 
 -- Auto Reset
 local autoResetEnabled = false
@@ -4079,7 +4584,7 @@ MiscGroup:AddToggle("AutoResetToggle", {
 	Text = "Auto Reset",
 	Default = false,
 	Callback = function(on)
-		SaveManager:Save("AutoSave")
+		Hub.requestSave()
 		autoResetEnabled = on
 
 		if not on then
@@ -4108,10 +4613,10 @@ MiscGroup:AddToggle("TriggerbotToggle", {
 	Text = "Trigger Bot",
 	Default = Triggerbot.Enabled,
 	Callback = function(value)
-		SaveManager:Save("AutoSave")
+		Hub.requestSave()
 		Triggerbot.Enabled = value
 		if Triggerbot.Enabled and not Triggerbot.Connection then
-			Triggerbot.Connection = RunService.Heartbeat:Connect(function() Triggerbot:OnHeartbeat() end)
+			Triggerbot.Connection = Hub.connect(RunService.Heartbeat, function() Triggerbot:OnHeartbeat() end)
 		elseif not Triggerbot.Enabled and Triggerbot.Connection then
 			Triggerbot.Connection:Disconnect() 
 			Triggerbot.Connection = nil
@@ -4127,9 +4632,17 @@ MiscGroup:AddSlider("FOVSlider", {
 	Max = 120,
 	Rounding = 0,
 	Suffix = "°",
-	Callback = function(value) game.Workspace.CurrentCamera.FieldOfView = value end
+	Callback = function(value)
+        local cam = workspace.CurrentCamera
+        if cam then
+            if Hub.cameraFOV[cam] == nil then Hub.cameraFOV[cam] = cam.FieldOfView end
+            cam.FieldOfView = value
+        end
+        Hub.requestSave()
+    end
 })
 
+do
 -- Black Hole Detection
 local variants = {
 	"BlackHole",
@@ -4161,7 +4674,7 @@ local variants = {
 local function isBlackHole(obj)
 	local name = obj.Name:lower()
 	for _, v in ipairs(variants) do
-		if name:find(v:lower()) then
+		if name:find(v:lower(), 1, true) then
 			return true
 		end
 	end
@@ -4198,7 +4711,7 @@ local function getClosestPlayer(pos)
 	return closest or "Unknown"
 end
 
-workspace.ChildAdded:Connect(function(obj)
+Hub.connect(workspace.ChildAdded, function(obj)
 	task.wait(0.1)
 	if isBlackHole(obj) then
 		local pos = getBHPosition(obj)
@@ -4207,7 +4720,7 @@ workspace.ChildAdded:Connect(function(obj)
 			return 
 		end
 		local closest = getClosestPlayer(pos)
-		notify("Black Hole Alert", closest .. " has been kicked!", 5)
+		notify("Black Hole Alert", closest .. " is nearest; source is unconfirmed.", 5)
 	end
 end)
 
@@ -4219,6 +4732,8 @@ for _, obj in pairs(workspace:GetChildren()) do
 			notify("Black Hole Detected", closest .. " is nearest!", 5)
 		end
 	end
+end
+
 end
 
 -- Anchor Object
@@ -4261,12 +4776,12 @@ MiscGroup:AddLabel("Anchor Object Bind"):AddKeyPicker("AnchorObjectKey", {
 
 		grabPart.CanCollide = wasCollide
 
-		if not targetModel then return end
+		if not targetModel or not Hub.canAffect(targetModel) then return end
 
 		if not targetModel.Parent then
 			local found = false
 			local connection
-			connection = targetModel.AncestryChanged:Connect(function(_, parent)
+			connection = Hub.connect(targetModel.AncestryChanged, function(_, parent)
 				if parent then
 					found = true
 					connection:Disconnect()
@@ -4311,7 +4826,7 @@ MiscGroup:AddLabel("Anchor Object Bind"):AddKeyPicker("AnchorObjectKey", {
 
 		clone.Parent = targetModel
 
-		local hl = Instance.new("Highlight")
+		local hl = Hub.new("Highlight")
 		hl.Name = "AnchorHighlight"
 		hl.FillColor = Color3.fromRGB(0, 85, 255)
 		hl.FillTransparency = 0.4
@@ -4321,7 +4836,7 @@ MiscGroup:AddLabel("Anchor Object Bind"):AddKeyPicker("AnchorObjectKey", {
 		hl.Parent = targetModel
 
 		local connection
-		connection = RunService.Heartbeat:Connect(function()
+		connection = Hub.connect(RunService.Heartbeat, function()
 			if not clone or not clone.Parent or not targetModel or not targetModel.Parent then
 				if connection then connection:Disconnect() end
 				return
@@ -4341,13 +4856,13 @@ local changeLogGroup = Tabs.Info:AddLeftGroupbox("Change Log")
 
 changeLogGroup:AddLabel("Changelog", {
 	Text = [[
-• New Loop Kill system
-• Fixed defenses not working correctly
-• Fixed grab not working after respawn when Anti-Lag is enabled
-• Added Auras tab + Death Aura
-• Fixed inconsistent player WalkSpeed & JumpPower
-• Fixed Block Loop Kick
-• Plus multiple minor fixes & stability improvements
+• V1.4.5 complete supported settings persistence
+• Managed tasks, listeners and created instances
+• Extended grab and Anti Burn startup repairs
+• Camera and property restoration improvements
+• Debounced settings saves + diagnostics
+• End key for emergency unload
+• Live game behavior still requires testing
 ]],
 	DoesWrap = true,
 })
@@ -4365,22 +4880,97 @@ CreditsGroup:AddLabel("Credits", {
 -- UI Settings
 local MenuGroup = Tabs["UI Settings"]:AddLeftGroupbox("Menu")
 MenuGroup:AddButton("Unload", function() Library:Unload() end)
+MenuGroup:AddLabel("Emergency unload: End (restores tracked properties)", true)
+Hub.connect(UserInputService.InputBegan, function(input, processed)
+    if processed or UserInputService:GetFocusedTextBox() then return end
+    if input.KeyCode == Enum.KeyCode.End then Library:Unload() end
+end)
+MenuGroup:AddButton({Text = "Diagnostics", Func = function()
+    local listeners, workers = 0, 0
+    for connection in pairs(Hub.connections) do if connection.Connected then listeners += 1 end end
+    for thread in pairs(Hub.threads) do if coroutine.status(thread) ~= "dead" then workers += 1 end end
+    notify("Diagnostics", string.format("%d listeners / %d active workers. Config storage: %s. Touch API: %s.",
+        listeners, workers, Hub.storage and "available" or "unavailable", firetouchinterest and "available" or "unavailable"), 8)
+end})
 MenuGroup:AddLabel("Menu Keybind"):AddKeyPicker("MenuKeybind", { Default = "M", NoUI = true, Text = "Menu keybind" })
 Library.ToggleKeybind = Options.MenuKeybind
 
-ThemeManager:SetLibrary(Library)
-SaveManager:SetLibrary(Library)
-SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({ "MenuKeybind" })
-ThemeManager:SetFolder("ArrivaCoreHub")
-SaveManager:SetFolder("ArrivaCoreHub/Configs")
-SaveManager:BuildConfigSection(Tabs["UI Settings"])
-SaveManager:Load("AutoSave")
-ThemeManager:ApplyToTab(Tabs["UI Settings"])
-notify("Config file loaded!","Your settings were loaded from the last autosave!")
+Hub.storage = isfile and readfile and writefile and isfolder and makefolder and listfiles
+if Hub.storage then
+    local ok, err = pcall(function()
+        ThemeManager:SetLibrary(Library)
+        SaveManager:SetLibrary(Library)
+        SaveManager:SetIgnoreIndexes({"MultiWhitelist"})
+        Hub.installConfigLoading(SaveManager)
+        ThemeManager:SetFolder("ArrivaCoreHub")
+        SaveManager:SetFolder("ArrivaCoreHub/Configs")
+        SaveManager:BuildConfigSection(Tabs["UI Settings"])
+        ThemeManager:ApplyToTab(Tabs["UI Settings"])
+        if isfile("ArrivaCoreHub/Configs/settings/AutoSave.json") then
+            local success, loadError = SaveManager:Load("AutoSave")
+            if success then notify("Config", "Your saved settings were loaded.")
+            else notify("Config", "Could not load settings: " .. tostring(loadError)) end
+        end
+    end)
+    if not ok then Hub.storage = false; notify("Config", tostring(err)) end
+else
+    notify("Config", "File storage unavailable. Settings work for this session.")
+end
+-- Defer until SaveManager's deferred load callbacks have finished.
+task.defer(function()
+    Hub.readSafety()
+    if Hub.refreshWhitelistUI then Hub.refreshWhitelistUI() end
+    Hub.ready = true
+end)
+MenuGroup:AddButton({Text = "Save now", Func = function()
+    if not Hub.storage then notify("Config", "File storage is unavailable."); return end
+    local ok, err = Hub.persistSettings()
+    notify("Config", ok and "All supported settings saved." or "Save failed: " .. tostring(err))
+end})
+MenuGroup:AddButton({Text = "Save status", Func = function()
+    local message = "Storage: " .. (Hub.storage and "available" or "unavailable")
+        .. " | Last successful save: " .. (Hub.lastSaveAt or "none this session")
+    if Hub.lastSaveError then message ..= " | Save error: " .. Hub.lastSaveError end
+    if Hub.lastSnapshotError then message ..= " | Snapshot error: " .. Hub.lastSnapshotError end
+    notify("Config", message, 8)
+end})
+MenuGroup:AddLabel("Saved toggles restore their previous state. Whitelist selections use their separate safety file.", true)
+MenuGroup:AddButton({Text = "Load Infinite Yield (external)", Func = function()
+    task.spawn(function() Hub.fetch("https://raw.githubusercontent.com/EdgeIY/infiniteyield/master/source") end)
+end})
+Hub.cleanup(function()
+    -- Explicit restoration, since remaining tasks are canceled on unload.
+    unfreezeChar(Player.Character)
+    stopNoclip()
+    RemoveAllBoxes()
+    disconnectWatchers()
+    restorePaintParts()
+    if bvInstance then bvInstance:Destroy() end
+    if bgInstance then bgInstance:Destroy() end
+    for _, item in ipairs(waterParts) do
+        pcall(function() item.part.CanCollide = item.originalCollide end)
+    end
+    for obj, props in pairs(oldProperties) do
+        pcall(function()
+            local instance = obj == "Lighting" and game:GetService("Lighting") or obj
+            for prop, value in pairs(props) do instance[prop] = value end
+        end)
+    end
+    for _, plr in ipairs(Players:GetPlayers()) do
+        local root = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
+        local esp = root and root:FindFirstChild("NameESP")
+        if esp then esp:Destroy() end
+    end
+end)
+
+Hub.connect(Player.CharacterAdded, function(char)
+    char:WaitForChild("HumanoidRootPart", 5)
+    if not Hub.alive or Player.Character ~= char then return end
+    if Toggles.PaintDeleteToggle and Toggles.PaintDeleteToggle.Value then setTouchQuery(false) end
+end)
 
 -- Player Events
-Players.PlayerRemoving:Connect(function(player)
+Hub.connect(Players.PlayerRemoving, function(player)
 	if player:IsFriendsWith(Player.UserId) then
 		notify("Friend Notification", player.Name .. " left", 5)
 	else
@@ -4388,21 +4978,14 @@ Players.PlayerRemoving:Connect(function(player)
 	end
 end)
 
-Players.PlayerAdded:Connect(function(plr)
+Hub.connect(Players.PlayerAdded, function(plr)
 	if plr:IsFriendsWith(Player.UserId) then
 		notify("Friend Notification", plr.Name .. " joined", 5)
 	end
 end)
 
-task.spawn(function()
-	while true do
-		task.wait(10)
-		pcall(function()
-			SaveManager:Save("AutoSave")
-		end)
-	end
-end)
+-- Autosave is scheduled after setting changes; no permanent polling loop.
 
 -- Send loaded message
 
-if LocalPlayer.Name ~= "arrivabus415" then sendHubLoadedMessage() end
+notify("Arriva Core Hub", "Maintenance revision loaded. Your original tabs and gameplay controls are retained.", 5)
