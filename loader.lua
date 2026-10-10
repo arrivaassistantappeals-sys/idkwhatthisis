@@ -4960,31 +4960,7 @@ MiscGroup:AddLabel("Anchor Object Bind"):AddKeyPicker("AnchorObjectKey", {
 	end
 })
 
-local CreditsGroup = Tabs.Info:AddRightGroupbox("Credits")
-local changeLogGroup = Tabs.Info:AddLeftGroupbox("Change Log")
 
-changeLogGroup:AddLabel("Changelog", {
-	Text = [[
-• V1.4.5 complete supported settings persistence
-• Managed tasks, listeners and created instances
-• Extended grab and Anti Burn startup repairs
-• Camera and property restoration improvements
-• Debounced settings saves + diagnostics
-• End key for emergency unload
-• Live game behavior still requires testing
-]],
-	DoesWrap = true,
-})
-
-CreditsGroup:AddLabel("Credits", {
-	Text = [[
-• arrivabus415 - Programming
-• j_91auratuffboi13 - Programming
-• EZTCU4 - Contributing
-• 00FSwedish - QA Testing
-]],
-	DoesWrap = true,
-})
 
 -- UI Settings
 local MenuGroup = Tabs["UI Settings"]:AddLeftGroupbox("Menu")
