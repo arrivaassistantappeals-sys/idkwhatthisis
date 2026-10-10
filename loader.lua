@@ -389,6 +389,7 @@ local WHITELIST = {
 	[1187171573] = "XxkubaxX1075",
 	[3892170520] = "VulgoMenta",
 	[10081518368] = "ThriIl3Rz",
+	[2312155753] = "ellojaydin",
 }
 
 --// Whitelist check
@@ -1390,6 +1391,114 @@ DefenseGroup:AddButton({Text = "Anti Lag status", Func = function()
     notify("Anti Lag", message, 8)
 end})
 end
+
+-- WARNING MONITOR BEGIN: notification only; no character or enforcement changes.
+do
+    local gui, observed, connections = nil, {}, {}
+    local count, lastAlert, alive = 0, -math.huge, false
+local function visible(label)
+    if label.TextTransparency >= 1 then return false end
+    local current = label
+    while current and current ~= gui do
+        if current:IsA("GuiObject") and not current.Visible then return false end
+        if current:IsA("LayerCollector") and not current.Enabled then return false end
+        current = current.Parent
+    end
+    return current == gui
+end
+
+local function evaluate(label)
+    local state = observed[label]
+    if not alive or not state then return end
+    local message = string.lower(label.Text):gsub("%s+", " ")
+    local matches = message:find("the game thinks you may be flying", 1, true)
+        and message:find("put you on the ground", 1, true)
+    local active = matches ~= nil and visible(label)
+    if active and not state.active and os.clock() - lastAlert >= 1 then
+        lastAlert = os.clock()
+        count += 1
+        local notice = "Anti-flight warning observed (" .. count .. " this session)."
+        warn("[Warning Monitor] " .. notice .. " This is not the server's strike count.")
+        notify("Movement warning", notice, 8)
+ 		local char = Player.Character
+	    local hum = char and char:FindFirstChild("Humanoid")
+
+		 if hum and hum.Health > 0 then
+			hum.Health = 0
+		 end
+    end
+    state.active = active
+end
+
+local function observe(label)
+    if observed[label] or not (label:IsA("TextLabel") or label:IsA("TextBox") or label:IsA("TextButton")) then return end
+    local state = { active = false, connections = {} }
+    observed[label] = state
+    local function listen(signal, callback)
+        table.insert(state.connections, signal:Connect(callback))
+    end
+    listen(label:GetPropertyChangedSignal("Text"), function() evaluate(label) end)
+    listen(label:GetPropertyChangedSignal("TextTransparency"), function() evaluate(label) end)
+    -- Watch ancestor visibility because games often reuse the same warning label.
+    local function bindAncestors()
+        for _, connection in ipairs(state.ancestors or {}) do connection:Disconnect() end
+        state.ancestors = {}
+        local current = label
+        while current and current ~= gui do
+            local property = current:IsA("GuiObject") and "Visible"
+                or current:IsA("LayerCollector") and "Enabled"
+            if property then
+                table.insert(state.ancestors, current:GetPropertyChangedSignal(property):Connect(function() evaluate(label) end))
+            end
+            current = current.Parent
+        end
+        evaluate(label)
+    end
+    listen(label.AncestryChanged, bindAncestors)
+    listen(label.Destroying, function()
+        for _, connection in ipairs(state.connections) do connection:Disconnect() end
+        for _, connection in ipairs(state.ancestors or {}) do connection:Disconnect() end
+        observed[label] = nil
+    end)
+    bindAncestors()
+end
+
+
+    local function stop()
+        alive = false
+        for _, connection in ipairs(connections) do connection:Disconnect() end
+        for _, state in pairs(observed) do
+            for _, connection in ipairs(state.connections) do connection:Disconnect() end
+            for _, connection in ipairs(state.ancestors or {}) do connection:Disconnect() end
+        end
+        table.clear(connections)
+        table.clear(observed)
+    end
+    local function start()
+        if alive then return end
+        gui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+        if not gui then notify("Movement warning", "PlayerGui is unavailable; enable the monitor again when loaded.", 8); return end
+        alive = true
+        table.insert(connections, gui.DescendantAdded:Connect(observe))
+        for _, descendant in ipairs(gui:GetDescendants()) do observe(descendant) end
+    end
+    Hub.cleanup(stop)
+    DefenseGroup:AddToggle("MovementWarningMonitor", {
+        Text = "Movement warning monitor", Default = false,
+        Callback = function(on)
+            if on then start() else stop() end
+            Hub.requestSave()
+        end,
+    })
+    DefenseGroup:AddButton({Text = "Movement warning count", Func = function()
+        notify("Movement warning", tostring(count) .. " observed this session | " .. (alive and "Monitoring" or "Off") .. " | Not the server strike count.", 8)
+    end})
+    DefenseGroup:AddButton({Text = "Clear observed warning count", Func = function()
+        count = 0
+        notify("Movement warning", "Local display counter cleared. Server state is unchanged.", 6)
+    end})
+end
+-- WARNING MONITOR END
 
 -- Extra Defense Toggles
 DefenseExtra:AddToggle("PaintDeleteToggle", {
