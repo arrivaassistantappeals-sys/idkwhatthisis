@@ -624,7 +624,6 @@ local Tabs = {
 	Player = Window:AddTab("Player Options", "user"),
 	Misc = Window:AddTab("Misc", "box"),
 	["UI Settings"] = Window:AddTab("UI Settings", "settings"),
-	Info = Window:AddTab("Information", "clipboard-pen-line")
 }
 
 --// Core Variables
