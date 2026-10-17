@@ -619,6 +619,18 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 local function createArrivaSidebar()
     local UI = {Theme = {ReferenceDark = true}, tabs = {}, keybinds = {}, visible = true}
     local player = game:GetService("Players").LocalPlayer
+    local playerService=game:GetService("Players")
+    local knownNames={}
+    local function rememberPlayer(person)
+        local now=os.clock()
+        knownNames[string.lower(person.Name)]={name=person.Name,time=now}
+        if type(person.DisplayName)=="string" and #person.DisplayName>=3 then
+            knownNames[string.lower(person.DisplayName)]={name=person.DisplayName,time=now}
+        end
+    end
+    for _,person in ipairs(playerService:GetPlayers()) do rememberPlayer(person) end
+    Hub.connect(playerService.PlayerAdded,rememberPlayer)
+    Hub.connect(playerService.PlayerRemoving,rememberPlayer)
     local input = game:GetService("UserInputService")
     local colors = {background = Color3.fromRGB(25,25,25), sidebar = Color3.fromRGB(31,31,31),
         card = Color3.fromRGB(33,33,33), line = Color3.fromRGB(58,58,58),
@@ -981,7 +993,7 @@ local function createArrivaSidebar()
         self.defaultGlowColor=gradient.Color
         local header=make("Frame",root,{Size=UDim2.new(1,0,0,66),BackgroundTransparency=1,Active=true})
         make("ImageLabel",header,{Name="ArrivaLogo",BackgroundTransparency=1,
-            Image="rbxassetid://84122605493729",ScaleType=Enum.ScaleType.Fit,
+            Image="rbxassetid://90461919222617",ScaleType=Enum.ScaleType.Fit,
             Position=UDim2.fromOffset(20,11),Size=UDim2.fromOffset(44,44)})
         local title=text(header,"ARRIVA CORE HUB",{Position=UDim2.fromOffset(78,0),Size=UDim2.new(1,-218,1,0),TextSize=23})
         local titleFont=Font.fromEnum(Enum.Font.Ubuntu)
@@ -1231,15 +1243,44 @@ local function createArrivaSidebar()
             Font=Enum.Font.GothamBold,TextSize=15,TextColor3=accent,TextWrapped=true,LineHeight=1.2,
             TextYAlignment=Enum.TextYAlignment.Center,TextTruncate=Enum.TextTruncate.None})
         local function escape(value)
-            return value:gsub("&","&amp;"):gsub("<","&lt;"):gsub(">","&gt;")
+            return (value:gsub("&","&amp;"):gsub("<","&lt;"):gsub(">","&gt;"))
         end
-        local names={}
-        for _,person in ipairs(game:GetService("Players"):GetPlayers()) do names[person.Name]=true end
+        -- Keep recent departures available to every notification, not just leave alerts.
+        for _,person in ipairs(playerService:GetPlayers()) do rememberPlayer(person) end
+        local candidates={}
+        for key,entry in pairs(knownNames) do
+            if os.clock()-entry.time>300 then knownNames[key]=nil
+            else table.insert(candidates,key) end
+        end
+        table.sort(candidates,function(a,b) return #a>#b end)
         local hex=string.format("#%02X%02X%02X",math.floor(accent.R*255+0.5),math.floor(accent.G*255+0.5),math.floor(accent.B*255+0.5))
-        local readable=escape(content):gsub("[%w_]+",function(word)
-            if names[word] then return '<font color="' .. hex .. '">' .. word .. '</font>' end
-            return word
-        end)
+        local lower=string.lower(content)
+        local pieces={}
+        local cursor=1
+        while cursor<=#content do
+            local bestStart,bestEnd
+            for _,name in ipairs(candidates) do
+                local search=cursor
+                while search<=#content do
+                    local first,last=lower:find(name,search,true)
+                    if not first then break end
+                    local before=first>1 and lower:sub(first-1,first-1) or ""
+                    local after=lower:sub(last+1,last+1)
+                    if not before:match("[%w_]") and not after:match("[%w_]") then
+                        if not bestStart or first<bestStart or (first==bestStart and last>bestEnd) then
+                            bestStart,bestEnd=first,last
+                        end
+                        break
+                    end
+                    search=last+1
+                end
+            end
+            if not bestStart then table.insert(pieces,escape(content:sub(cursor)));break end
+            table.insert(pieces,escape(content:sub(cursor,bestStart-1)))
+            table.insert(pieces,'<font color="' .. hex .. '">' .. escape(content:sub(bestStart,bestEnd)) .. '</font>')
+            cursor=bestEnd+1
+        end
+        local readable=table.concat(pieces)
         local body=text(frame,readable,{Position=UDim2.fromOffset(16,44),Size=UDim2.new(1,-32,0,24),
             RichText=true,TextWrapped=true,TextSize=15,LineHeight=1.15,TextColor3=Color3.fromRGB(245,245,245),
             TextYAlignment=Enum.TextYAlignment.Top,TextTruncate=Enum.TextTruncate.None})
