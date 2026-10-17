@@ -641,6 +641,7 @@ local function createArrivaSidebar()
     -- commit 3ef72398fb4c8ba6fd1801e98704991d3cc9cbc2; Lucide icons: ISC license.
     -- Only the 15 assets used here are retained; no icon-library script is fetched.
     local iconAssets = {
+        activity={16898612629,514,771},["user-round-check"]={16898613869,869,404},
         ["door-open"]={16898613044,967,759},["log-out"]={16898613509,820,955},
         ["triangle-alert"]={16898613869,967,0},["circle-alert"]={16898612819,918,808},
         ["rotate-ccw"]={16898613699,967,355},orbit={16898613613,967,612},info={16898613509,612,869},
@@ -1674,11 +1675,11 @@ local Window = Library:CreateWindow({
 
 local Tabs = {
 	Defense = Window:AddTab("Defense", "shield"),
-	AntiLag = Window:AddTab("Anti Lag", "shield"),
+	AntiLag = Window:AddTab("Anti Lag", "activity"),
     Customization = Window:AddTab("Menu Customization", "settings"),
     Updates = Window:AddTab("Update Log", "sparkles"),
     Notifications = Window:AddTab("Notifications", "info"),
-    Whitelist = Window:AddTab("Whitelist", "shield"),
+    Whitelist = Window:AddTab("Whitelist", "user-round-check"),
 	Target = Window:AddTab("Loop Players", "crosshair"),
 	Aura = Window:AddTab("Auras", "align-vertical-space-around"),
 	Grab = Window:AddTab("Grab Settings", "hand"),
