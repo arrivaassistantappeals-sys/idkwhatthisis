@@ -1287,17 +1287,27 @@ local function createArrivaSidebar()
         body.Visible=content~=""
         local function fitNotice()
             if not frame.Parent then return end
-            local headerHeight=math.max(24,heading.TextBounds.Y)
+            local function measuredHeight(value,label,font,lineHeight)
+                local width=label.AbsoluteSize.X/(self.noticeScale or 1)
+                if width<=1 then return label.TextBounds.Y end
+                local ok,bounds=pcall(function()
+                    return game:GetService("TextService"):GetTextSize(value,15,font,Vector2.new(width,10000))
+                end)
+                if ok and bounds and type(bounds.Y)=="number" then return math.ceil(bounds.Y*(lineHeight or 1)) end
+                return label.TextBounds.Y
+            end
+            local headerHeight=math.max(24,measuredHeight(title,heading,Enum.Font.GothamBold,1.2))
             headerRow.Size=UDim2.new(1,-32,0,headerHeight)
             heading.Size=UDim2.new(1,-30,1,0)
             local top=12+headerHeight+10
-            local height=content~="" and math.max(24,body.TextBounds.Y) or 0
+            local height=content~="" and math.max(24,measuredHeight(content,body,Enum.Font.Gotham,1.15)) or 0
             body.Position=UDim2.fromOffset(16,top)
             body.Size=UDim2.new(1,-32,0,height)
             frame.Size=UDim2.new(0.92,0,0,math.max(58,top+height+14))
         end
         local headerSizing=heading:GetPropertyChangedSignal("TextBounds"):Connect(fitNotice)
-        frame.Destroying:Connect(function() headerSizing:Disconnect() end)
+        local widthSizing=heading:GetPropertyChangedSignal("AbsoluteSize"):Connect(fitNotice)
+        frame.Destroying:Connect(function() headerSizing:Disconnect();widthSizing:Disconnect() end)
         local sizing=body:GetPropertyChangedSignal("TextBounds"):Connect(fitNotice)
         frame.Destroying:Connect(function() sizing:Disconnect() end)
         task.defer(fitNotice)
@@ -5549,7 +5559,7 @@ local function trackRespawn(player)
 		local tracked, reason = isTrackedPlayer(player)
 		if not tracked then return end
 
-		notify("Target Respawned! " .. reason .. " | Player: " .. player.Name, 8)
+		notify("Target respawned", player.Name .. " has respawned. " .. reason, 8)
 		if Hub.canHarm(player) then SelectedPlayer = player end
 
 		local sound = Hub.new("Sound")
