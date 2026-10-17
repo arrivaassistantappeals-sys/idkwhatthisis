@@ -1190,7 +1190,9 @@ local function createArrivaSidebar()
         -- Event-specific symbols; classification uses the message for legacy calls too.
         if category:find("joined",1,true) then
             iconName="door-open";accent=Color3.fromRGB(111,224,160)
-        elseif category:find("left",1,true) or category:find("disconnected",1,true) or category:find("kicked",1,true) then
+        elseif category:find("kicked",1,true) then
+            iconName="triangle-alert";accent=Color3.fromRGB(255,115,125)
+        elseif category:find("left",1,true) or category:find("disconnected",1,true) then
             iconName="log-out";accent=Color3.fromRGB(255,115,125)
         elseif category:find("black hole",1,true) or category:find("blackhole",1,true) then
             iconName="orbit"
