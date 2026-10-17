@@ -977,6 +977,8 @@ local function createArrivaSidebar()
         local keys={}
         for i=0,6 do table.insert(keys,ColorSequenceKeypoint.new(i/6,Color3.fromHSV(i/6,1,1))) end
         local gradient=make("UIGradient",outline,{Color=ColorSequence.new(keys)})
+        self.glowGradient=gradient
+        self.defaultGlowColor=gradient.Color
         local header=make("Frame",root,{Size=UDim2.new(1,0,0,66),BackgroundTransparency=1,Active=true})
         make("ImageLabel",header,{Name="ArrivaLogo",BackgroundTransparency=1,
             Image="rbxassetid://84122605493729",ScaleType=Enum.ScaleType.Fit,
@@ -1113,9 +1115,24 @@ local function createArrivaSidebar()
     end
     function UI:SetVisibility(visible) self.visible=visible==true;Hub.menuVisible=self.visible;if self.gui then self.gui.Enabled=self.visible end;if Hub.menuMouse then Hub.menuMouse(self.visible) end end
     function UI:IsVisible() return self.visible end
+    function UI:RefreshAccentGlow()
+        if not self.glowGradient or not self.outline then return end
+        self.outline.Enabled=self.rainbow~=false
+        self.outline.Color=Color3.new(1,1,1)
+        if not self.activeTheme or self.activeTheme=="Default" then
+            self.glowGradient.Color=self.defaultGlowColor
+        else
+            local accent=colors.blueLine
+            self.glowGradient.Color=ColorSequence.new({
+                ColorSequenceKeypoint.new(0,accent:Lerp(colors.background,0.3)),
+                ColorSequenceKeypoint.new(0.5,accent:Lerp(Color3.new(1,1,1),0.15)),
+                ColorSequenceKeypoint.new(1,accent:Lerp(colors.background,0.3)),
+            })
+        end
+    end
     function UI:SetRainbowEnabled(value)
         self.rainbow=value==true
-        if self.outline then self.outline.Enabled=self.rainbow end
+        self:RefreshAccentGlow()
     end
     function UI:SetBorderThickness(value)
         if self.outline then self.outline.Thickness=math.clamp(value,1,4) end
@@ -1254,12 +1271,13 @@ local function createArrivaSidebar()
         Rose={ {29,19,24},{39,25,32},{48,31,39},{88,57,70},{255,239,246},{209,177,192},{147,66,100},{240,133,175},{245,223,233} },
         Ocean={ {13,25,30},{18,33,40},{24,42,50},{47,77,88},{233,249,255},{165,195,205},{36,112,135},{86,204,225},{215,240,247} },
         Amber={ {28,24,17},{36,31,22},{45,38,26},{82,68,44},{255,247,228},{204,188,155},{139,103,37},{237,184,74},{245,232,207} },
-        ["Reference Dark"]={ {25,25,25},{31,31,31},{33,33,33},{58,58,58},{237,237,237},{170,170,176},{55,104,146},{69,137,191},{220,224,232} },
+        ["Default"]={ {25,25,25},{31,31,31},{33,33,33},{58,58,58},{237,237,237},{170,170,176},{55,104,146},{69,137,191},{220,224,232} },
         Midnight={ {16,21,34},{21,28,44},{28,37,55},{59,75,99},{241,245,255},{177,190,211},{55,95,165},{112,163,255},{223,233,251} },
         Violet={ {23,18,32},{31,25,43},{40,32,55},{75,59,96},{246,239,255},{192,177,208},{104,70,150},{181,137,244},{236,224,250} },
         Forest={ {16,25,22},{22,34,29},{29,43,36},{53,78,65},{237,250,241},{173,198,181},{43,106,76},{109,205,151},{219,241,225} },
     }
     function UI:SetTheme(name)
+        if name=="Reference Dark" then name="Default" end
         local palette=palettes[name]
         if name=="Custom" then
             local bg,accent,fg=hex(custom.background),hex(custom.accent),hex(custom.text)
@@ -1295,11 +1313,11 @@ local function createArrivaSidebar()
             end
         end
     end
-    Hub.setSidebarTheme=function(name) UI:SetTheme(name) end
+    Hub.setSidebarTheme=function(name) UI:SetTheme(name);UI:RefreshAccentGlow() end
     Hub.setCustomThemeColor=function(key,value)
         if custom[key]==nil or not hex(value) then return false end
         custom[key]=tostring(value):gsub("#","")
-        if UI.activeTheme=="Custom" then UI:SetTheme("Custom") end
+        if UI.activeTheme=="Custom" then UI:SetTheme("Custom");UI:RefreshAccentGlow() end
         return true
     end
     return UI
@@ -1386,6 +1404,7 @@ function Group:AddDropdown(id, info)
     self:ensureSection()
     local control = register(id, "Dropdown", info)
     function control:normalize(value)
+        if id=="SidebarTheme" and value=="Reference Dark" then value="Default" end
         if not self.Multi then
             if type(value) == "table" then value = value[1] end
             if type(value) == "number" then value = self.Values[value] end
@@ -1556,11 +1575,11 @@ function ThemeManager:SetFolder(value) self.folder = value end
 function ThemeManager:ApplyToTab(tab)
     local group = tab:AddRightGroupbox("Appearance")
     group:AddLabel("Border and window customization")
-    group:AddToggle("SidebarRainbowBorder", {Text = "Animated rainbow border", Default = true,
+    group:AddToggle("SidebarRainbowBorder", {Text = "Accent glow", Default = true,
         Callback = function(on) Rayfield:SetRainbowEnabled(on) end})
-    group:AddSlider("SidebarBorderThickness",{Text="Border thickness",Default=1.5,Min=1,Max=4,Rounding=1,
+    group:AddSlider("SidebarBorderThickness",{Text="Accent glow thickness",Default=1.5,Min=1,Max=4,Rounding=1,
         Callback=function(value) Rayfield:SetBorderThickness(value) end})
-    group:AddSlider("SidebarBorderSpeed",{Text="Rainbow speed",Default=14,Min=1,Max=90,Rounding=0,
+    group:AddSlider("SidebarBorderSpeed",{Text="Accent glow speed",Default=14,Min=1,Max=90,Rounding=0,
         Callback=function(value) Rayfield:SetBorderSpeed(value) end})
     group:AddSlider("SidebarUIScale",{Text="UI scale (%)",Default=100,Min=70,Max=130,Rounding=0,
         Callback=function(value) Rayfield:SetUserScale(value) end})
@@ -6592,7 +6611,7 @@ end
 local MenuGroup = Tabs["UI Settings"]:AddLeftGroupbox("Menu")
 local ThemeGroup = Tabs.Customization:AddLeftGroupbox("Hub Theme")
 ThemeGroup:AddDropdown("SidebarTheme", {
-    Text="Hub theme", Values={"Reference Dark","Midnight","Violet","Forest","Rose","Ocean","Amber","Custom"}, Default=1,
+    Text="Hub theme", Values={"Default","Midnight","Violet","Forest","Rose","Ocean","Amber","Custom"}, Default=1,
     Callback=function(name)
         if Hub.setSidebarTheme then Hub.setSidebarTheme(name) end
         Hub.requestSave()
