@@ -1,3 +1,5 @@
+-- Arriva Core Hub V1.4.5 - maintenance revision of the supplied hub.
+-- Packet/Line Lag flooders removed. Gameplay features retain their original scope.
 local Hub = {alive = true, connections = {}, threads = {}, cleanups = {}, ready = false}
 Hub.env = (getgenv and getgenv()) or shared
 if Hub.env.ArrivaCoreMaintenance then
@@ -385,8 +387,6 @@ if WHITELIST[LocalPlayer.UserId] == nil then
 	LocalPlayer:Kick("Nah not today bruh. find ur own shit to use.")
 	return
 end
-
-
 if game.PlaceId ~= 6961824067 then
     LocalPlayer:Kick("This hub is only for FTAP.")
     return
@@ -466,7 +466,7 @@ local function bringSelfToOwner()
 end
 
 local function revealSelf()
-	sysMsg("I'm using Arriva Core Hub V2.0!")
+	sysMsg("I'm using Arriva Core Hub V1.4!")
 end
 
 local function killSelf()
@@ -984,7 +984,7 @@ local function createArrivaSidebar()
         self.defaultGlowColor=gradient.Color
         local header=make("Frame",root,{Size=UDim2.new(1,0,0,66),BackgroundTransparency=1,Active=true})
         make("ImageLabel",header,{Name="ArrivaLogo",BackgroundTransparency=1,
-            Image="rbxassetid://90461919222617",ScaleType=Enum.ScaleType.Fit,
+            Image="rbxassetid://84122605493729",ScaleType=Enum.ScaleType.Fit,
             Position=UDim2.fromOffset(20,11),Size=UDim2.fromOffset(44,44)})
         local title=text(header,"ARRIVA CORE HUB",{Position=UDim2.fromOffset(78,0),Size=UDim2.new(1,-218,1,0),TextSize=23})
         local titleFont=Font.fromEnum(Enum.Font.Ubuntu)
@@ -997,6 +997,12 @@ local function createArrivaSidebar()
         icon(close,"x",{AnchorPoint=Vector2.new(0.5,0.5),Position=UDim2.fromScale(0.5,0.5),ImageColor3=colors.text})
         local body=make("Frame",root,{Position=UDim2.fromOffset(0,66),Size=UDim2.new(1,0,1,-66),BackgroundTransparency=1})
         local sidebar=make("Frame",body,{Size=UDim2.new(0,204,1,0),BackgroundColor3=colors.sidebar,BorderSizePixel=0})
+        -- Match the outer bottom-left curve; leave the internal seams square.
+        round(sidebar,14)
+        make("Frame",sidebar,{Name="SidebarTopFill",Size=UDim2.new(1,0,0,14),
+            BackgroundColor3=colors.sidebar,BorderSizePixel=0})
+        make("Frame",sidebar,{Name="SidebarInnerFill",Position=UDim2.new(1,-14,0,0),Size=UDim2.new(0,14,1,0),
+            BackgroundColor3=colors.sidebar,BorderSizePixel=0})
         make("Frame",sidebar,{Position=UDim2.new(1,-1,0,0),Size=UDim2.new(0,1,1,0),BackgroundColor3=colors.line,BorderSizePixel=0})
         self.search=make("TextBox",sidebar,{Position=UDim2.fromOffset(14,14),Size=UDim2.new(1,-28,0,42),
             BackgroundColor3=Color3.fromRGB(161,161,161),TextColor3=Color3.fromRGB(34,34,34),PlaceholderColor3=Color3.fromRGB(111,111,111),
@@ -1685,7 +1691,7 @@ local function notify(title, content, duration)
 end
 
 local function sendHubLoadedMessage()
-	local message = "Arriva Core Hub V2.0 Loaded..."
+	local message = "Arriva Core Hub V1.4 Loaded..."
 	local sent = false
 	pcall(function()
 		local chatVersion = TextChatService.ChatVersion
