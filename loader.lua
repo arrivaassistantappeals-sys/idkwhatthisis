@@ -5795,15 +5795,15 @@ do
             restore(entry)
             entry.part,entry.orientation,entry.position=part,orientation,position
         end
-        set(entry,orientation,{RigidityEnabled=true,Enabled=true,PrimaryAxisOnly=false,
-            ReactionTorqueEnabled=false,MaxTorque=1e9,MaxAngularVelocity=math.huge,Responsiveness=200})
-        set(entry,position,{RigidityEnabled=true,Enabled=true,ReactionForceEnabled=false,
-            MaxForce=1e9,MaxVelocity=math.huge,Responsiveness=200})
+        -- Keep the old movement response; do not introduce rigid positional solving.
+        set(entry,orientation,{MaxTorque=1e9,Responsiveness=200,MaxAngularVelocity=math.huge})
+        set(entry,position,{MaxForce=1e9,Responsiveness=200})
         return true
     end
     local function track(model)
         if enabled and model:IsA("Model") and model.Name=="GrabParts" and not tracked[model] then
             tracked[model]={saved={},elapsed=0}
+            configure(model,tracked[model])
         end
     end
     local function stop()
