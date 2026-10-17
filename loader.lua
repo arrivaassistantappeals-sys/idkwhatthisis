@@ -1235,6 +1235,7 @@ local function createArrivaSidebar()
         elseif category:find("warning",1,true) then iconName="triangle-alert"
         elseif category:find("error",1,true) or category:find("fail",1,true) then iconName="circle-alert"
         elseif iconName=="settings" then iconName="info" end
+        if category:find("[protected]",1,true) then accent=Color3.fromRGB(111,224,160) end
         local headerRow=make("Frame",frame,{BackgroundTransparency=1,
             Position=UDim2.fromOffset(16,12),Size=UDim2.new(1,-32,0,24)})
         icon(headerRow,iconName,{AnchorPoint=Vector2.new(0,0.5),Position=UDim2.new(0,0,0.5,0),
@@ -1281,6 +1282,7 @@ local function createArrivaSidebar()
             cursor=bestEnd+1
         end
         local readable=table.concat(pieces)
+        readable=readable:gsub("%[Protected%]",'<font color="#6FE0A0">[Protected]</font>')
         local body=text(frame,readable,{Position=UDim2.fromOffset(16,44),Size=UDim2.new(1,-32,0,24),
             RichText=true,TextWrapped=true,TextSize=15,LineHeight=1.15,TextColor3=Color3.fromRGB(245,245,245),
             TextYAlignment=Enum.TextYAlignment.Top,TextTruncate=Enum.TextTruncate.None})
