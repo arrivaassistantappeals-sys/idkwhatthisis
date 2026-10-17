@@ -1,4 +1,4 @@
--- Arriva Core Hub V2.0.5 - maintenance revision of the supplied hub.
+-- Arriva Core Hub V1.4.5 - maintenance revision of the supplied hub.
 -- Packet/Line Lag flooders removed. Gameplay features retain their original scope.
 local Hub = {alive = true, connections = {}, threads = {}, cleanups = {}, ready = false}
 Hub.env = (getgenv and getgenv()) or shared
@@ -387,10 +387,7 @@ if WHITELIST[LocalPlayer.UserId] == nil then
 	LocalPlayer:Kick("Nah not today bruh. find ur own shit to use.")
 	return
 end
-if game.PlaceId ~= 6961824067 then
-    LocalPlayer:Kick("This hub is only for FTAP.")
-    return
-end
+
 --// Debounce for sysMsg to prevent spam
 local lastMessages = {}
 local DEBOUNCE_TIME = 0.5
@@ -466,7 +463,7 @@ local function bringSelfToOwner()
 end
 
 local function revealSelf()
-	sysMsg("I'm using Arriva Core Hub V2.0!")
+	sysMsg("I'm using Arriva Core Hub V1.4!")
 end
 
 local function killSelf()
@@ -1628,6 +1625,7 @@ local Tabs = {
     Customization = Window:AddTab("Menu Customization", "settings"),
     Updates = Window:AddTab("Update Log", "sparkles"),
     Notifications = Window:AddTab("Notifications", "info"),
+    Whitelist = Window:AddTab("Whitelist", "shield"),
 	Target = Window:AddTab("Loop Players", "crosshair"),
 	Aura = Window:AddTab("Auras", "align-vertical-space-around"),
 	Grab = Window:AddTab("Grab Settings", "hand"),
@@ -1691,7 +1689,7 @@ local function notify(title, content, duration)
 end
 
 local function sendHubLoadedMessage()
-	local message = "Arriva Core Hub V2.0 Loaded..."
+	local message = "Arriva Core Hub V1.4 Loaded..."
 	local sent = false
 	pcall(function()
 		local chatVersion = TextChatService.ChatVersion
@@ -3998,7 +3996,7 @@ PlayerView:AddToggle("SelfNoclipToggle", {
 -- Target Tab
 local TargetGroup = Tabs.Target:AddLeftGroupbox("Target Interaction")
 local BlobGroup = Tabs.Target:AddRightGroupbox("Blobman Control")
-local WhitelistGroup = Tabs.Target:AddRightGroupbox("whitelist")
+local WhitelistGroup = Tabs.Whitelist:AddLeftGroupbox("Protected Players")
 
 local SelectedPlayer = nil
 local kickLoopEnabled = false
@@ -6812,6 +6810,40 @@ do
     end)
 end
 
+do
+    local reloading=false
+    MenuGroup:AddButton({Text="Reload Hub",Func=function()
+        if reloading then return end
+        reloading=true
+        notify("Reload Hub","Checking the latest hub version...",3)
+        local ok,compiled=pcall(function()
+            local source=game:HttpGet("https://raw.githubusercontent.com/arrivabus415/ArrivaCoreHub/main/main.lua")
+            local run,err=loadstring(source)
+            if not run then error(err) end
+            return run
+        end)
+        if not ok then
+            reloading=false
+            notify("Reload error","Download or compilation failed. Your current hub is still running. " .. tostring(compiled),8)
+            return
+        end
+        if not Hub.alive or Library.unloaded then return end
+        -- A native task survives the old hub's managed-worker cancellation.
+        Hub.nativeTask.defer(function()
+            if not Hub.alive or Library.unloaded then return end
+            Library:Unload()
+            local success,err=pcall(compiled)
+            if not success then
+                warn("[Arriva reload] " .. tostring(err))
+                pcall(function()
+                    game:GetService("StarterGui"):SetCore("SendNotification",{
+                        Title="Arriva reload failed",Text="The new hub could not start. Check the console for details.",Duration=8,
+                    })
+                end)
+            end
+        end)
+    end})
+end
 MenuGroup:AddButton("Unload", function() Library:Unload() end)
 MenuGroup:AddLabel("Emergency unload: End (restores tracked properties)", true)
 Hub.connect(UserInputService.InputBegan, function(input, processed)
