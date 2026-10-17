@@ -5748,81 +5748,101 @@ GrabOptions:AddToggle("NoclipGrabToggle", {
 	end
 })
 
--- Massless Grab
-local masslessGrabEnabled = false
-local masslessConnection
-
-local function startMasslessGrab()
-	if masslessConnection then return end
-
-	masslessConnection = Hub.connect(workspace.ChildAdded, function(v)
-		if not masslessGrabEnabled then return end
-		if not (v:IsA("Model") and v.Name == "GrabParts") then return end
-
-		task.spawn(function()
-			task.wait(0.05)
-
-			local dragPart = v:FindFirstChild("DragPart1") or v:FindFirstChild("DragPart")
-			for i = 1, 10 do
-				dragPart = v:FindFirstChild("DragPart1") or v:FindFirstChild("DragPart")
-				if dragPart then break end
-				task.wait(0.05)
-			end
-
-			if not dragPart or not Hub.canAffect(v) then return end
-
-			local alignOri = dragPart:FindFirstChild("AlignOrientation")
-			local alignPos = dragPart:FindFirstChild("AlignPosition")
-			if not (alignOri and alignPos) then return end
-
-			Hub.backup(alignOri, {"MaxTorque", "Responsiveness"})
-            Hub.backup(alignPos, {"MaxForce", "Responsiveness"})
-            local oriTorque = alignOri.MaxTorque
-			local oriOriResp = alignOri.Responsiveness
-			local oriForce = alignPos.MaxForce
-			local oriPosResp = alignPos.Responsiveness
-
-			while masslessGrabEnabled and Hub.canAffect(v) and v.Parent do
-				alignOri.MaxTorque = 1e9
-				alignOri.Responsiveness = 200
-				alignPos.MaxForce = 1e9
-				alignPos.Responsiveness = 200
-				task.wait(0.25)
-			end
-
-			if alignOri then
-				alignOri.MaxTorque = oriTorque
-				alignOri.Responsiveness = oriOriResp
-			end
-			if alignPos then
-				alignPos.MaxForce = oriForce
-				alignPos.Responsiveness = oriPosResp
-			end
-		end)
-	end)
+-- Massless Grab: remove orientation lag while retaining the game's rotation target.
+do
+    local enabled=false
+    local listeners={}
+    local tracked={}
+    local function restore(entry)
+        for object,properties in pairs(entry.saved) do
+            for property,value in pairs(properties) do pcall(function() object[property]=value end) end
+        end
+        table.clear(entry.saved)
+    end
+    local function set(entry,object,values)
+        local saved=entry.saved[object]
+        if not saved then saved={};entry.saved[object]=saved end
+        for property,value in pairs(values) do
+            if saved[property]==nil then saved[property]=object[property] end
+            object[property]=value
+        end
+    end
+    local function isObject(part)
+        if not part or not part:IsA("BasePart") or not Hub.canAffect(part) then return false end
+        local current=part.Parent
+        while current and current~=workspace do
+            if current:IsA("Model") and current:FindFirstChildOfClass("Humanoid") then return false end
+            current=current.Parent
+        end
+        return true
+    end
+    local function target(model)
+        local grab=model:FindFirstChild("GrabPart",true)
+        local weld=grab and grab:FindFirstChildWhichIsA("WeldConstraint")
+        if weld then
+            for _,part in pairs({weld.Part1,weld.Part0}) do
+                if part and not part:IsDescendantOf(model) and isObject(part) then return part end
+            end
+        end
+    end
+    local function configure(model,entry)
+        local part=target(model)
+        local drag=model:FindFirstChild("DragPart1",true) or model:FindFirstChild("DragPart",true)
+        local orientation=drag and drag:FindFirstChildWhichIsA("AlignOrientation")
+        local position=drag and drag:FindFirstChildWhichIsA("AlignPosition")
+        if not part or not orientation or not position then return false end
+        if entry.part~=part or entry.orientation~=orientation or entry.position~=position then
+            restore(entry)
+            entry.part,entry.orientation,entry.position=part,orientation,position
+        end
+        set(entry,orientation,{RigidityEnabled=true,Enabled=true,PrimaryAxisOnly=false,
+            ReactionTorqueEnabled=false,MaxTorque=1e9,MaxAngularVelocity=math.huge,Responsiveness=200})
+        set(entry,position,{RigidityEnabled=true,Enabled=true,ReactionForceEnabled=false,
+            MaxForce=1e9,MaxVelocity=math.huge,Responsiveness=200})
+        return true
+    end
+    local function track(model)
+        if enabled and model:IsA("Model") and model.Name=="GrabParts" and not tracked[model] then
+            tracked[model]={saved={},elapsed=0}
+        end
+    end
+    local function stop()
+        enabled=false
+        for _,connection in ipairs(listeners) do connection:Disconnect();Hub.connections[connection]=nil end
+        table.clear(listeners)
+        for _,entry in pairs(tracked) do restore(entry) end
+        table.clear(tracked)
+    end
+    local function start()
+        stop();enabled=true
+        table.insert(listeners,Hub.connect(workspace.ChildAdded,track))
+        for _,model in ipairs(workspace:GetChildren()) do track(model) end
+        table.insert(listeners,Hub.connect(RunService.Heartbeat,function(dt)
+            for model,entry in pairs(tracked) do
+                if not model.Parent or not Hub.canAffect(model) then
+                    restore(entry);tracked[model]=nil
+                else
+                    entry.elapsed+=dt
+                    if entry.elapsed>=0.1 then
+                        entry.elapsed=0
+                        if not configure(model,entry) then
+                            restore(entry);entry.part=nil;entry.orientation=nil;entry.position=nil
+                        end
+                    end
+                    local part=entry.part
+                    if part and part.Parent and not part.Anchored and isObject(part) then
+                        -- Suppress residual tumbling without overwriting CFrame or locking
+                        -- the orientation goal used by the normal rotation controls.
+                        part.AssemblyAngularVelocity=Vector3.zero
+                    end
+                end
+            end
+        end))
+    end
+    GrabOptions:AddToggle("MasslessGrabToggle",{Text="Massless Grab",Default=false,
+        Callback=function(on) if on then start() else stop() end;Hub.requestSave() end})
+    Hub.cleanup(stop)
 end
-
-local function stopMasslessGrab()
-	if masslessConnection then
-		masslessConnection:Disconnect()
-		masslessConnection = nil
-	end
-end
-
-GrabOptions:AddToggle("MasslessGrabToggle", {
-	Text = "Massless Grab",
-	Default = false,
-	Callback = function(on)
-		Hub.requestSave()
-		masslessGrabEnabled = on
-		if on then
-			startMasslessGrab()
-		else
-			stopMasslessGrab()
-		end
-	end
-})
-
 
 function IsMobile()
 	if LocalPlayer.PlayerGui:FindFirstChild("ContextActionGui") then
