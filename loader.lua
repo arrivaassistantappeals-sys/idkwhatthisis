@@ -979,7 +979,7 @@ local function createArrivaSidebar()
         local gradient=make("UIGradient",outline,{Color=ColorSequence.new(keys)})
         local header=make("Frame",root,{Size=UDim2.new(1,0,0,66),BackgroundTransparency=1,Active=true})
         make("ImageLabel",header,{Name="ArrivaLogo",BackgroundTransparency=1,
-            Image="rbxassetid://90461919222617",ScaleType=Enum.ScaleType.Fit,
+            Image="rbxassetid://84122605493729",ScaleType=Enum.ScaleType.Fit,
             Position=UDim2.fromOffset(20,11),Size=UDim2.fromOffset(44,44)})
         local title=text(header,"ARRIVA CORE HUB",{Position=UDim2.fromOffset(78,0),Size=UDim2.new(1,-218,1,0),TextSize=23})
         local titleFont=Font.fromEnum(Enum.Font.Ubuntu)
@@ -1597,6 +1597,7 @@ local Tabs = {
 	AntiLag = Window:AddTab("Anti Lag", "shield"),
     Customization = Window:AddTab("Menu Customization", "settings"),
     Updates = Window:AddTab("Update Log", "sparkles"),
+    Notifications = Window:AddTab("Notifications", "info"),
 	Target = Window:AddTab("Loop Players", "crosshair"),
 	Aura = Window:AddTab("Auras", "align-vertical-space-around"),
 	Grab = Window:AddTab("Grab Settings", "hand"),
@@ -6609,7 +6610,7 @@ do
     field("CustomThemeBackground","Background HEX","background","#191919")
     field("CustomThemeAccent","Accent HEX","accent","#4589BF")
     field("CustomThemeText","Text HEX","text","#EDEDED")
-    local notices=Tabs.Customization:AddRightGroupbox("Notifications")
+    local notices=Tabs.Notifications:AddRightGroupbox("Position & Appearance")
     notices:AddDropdown("NotificationPosition",{Text="Notification position",Default=1,
         Values={"Bottom Right","Bottom Left","Bottom Center","Top Right","Top Left","Top Center"},
         Callback=function(value) Hub.setNoticePreference("noticePosition",value) end})
@@ -6689,6 +6690,70 @@ do
     local section7=Tabs.Updates:AddLeftGroupbox("Testing notes")
     section7:AddLabel("This build has passed a syntax check. Some earlier UI and monitor changes also have mocked checks, but those do not replace testing inside the game.")
     section7:AddLabel("If something still looks off, a screenshot and the name of the setting help narrow it down.")
+end
+
+do
+    local events=Tabs.Notifications:AddLeftGroupbox("Player Events")
+    local preferences={joins=true,leaves=true,respawns=true,self=true}
+    local roster={}
+    local function toggle(id,title,key)
+        events:AddToggle(id,{Text=title,Default=true,Callback=function(on) preferences[key]=on end})
+    end
+    toggle("NotifyPlayerJoins","Player joined","joins")
+    toggle("NotifyPlayerLeaves","Player left","leaves")
+    toggle("NotifyPlayerRespawns","Player respawned","respawns")
+    toggle("NotifyMyCharacter","My death and respawn","self")
+    events:AddLabel("A player's first character spawn is not counted as a respawn. Repeated respawn alerts have an eight-second cooldown per player.")
+    local function disconnect(connection)
+        if connection then connection:Disconnect();Hub.connections[connection]=nil end
+    end
+    local function track(person)
+        if roster[person] then return end
+        local entry={seen=person.Character~=nil,last=-math.huge}
+        roster[person]=entry
+        local function watchDeath(char)
+            disconnect(entry.death);entry.death=nil
+            if person~=Player or not char then return end
+            local hum=char:FindFirstChildOfClass("Humanoid") or char:WaitForChild("Humanoid",5)
+            if not Hub.alive or roster[person]~=entry or person.Character~=char or not hum then return end
+            entry.death=Hub.connect(hum.Died,function()
+                if preferences.self then notify("Character warning","Your character died. Waiting for respawn.",4) end
+            end)
+        end
+        entry.character=Hub.connect(person.CharacterAdded,function(char)
+            local respawn=entry.seen
+            entry.seen=true
+            if respawn and os.clock()-entry.last>=8 then
+                entry.last=os.clock()
+                if person==Player then
+                    if preferences.self then notify("Character respawned","Your character has respawned.",4) end
+                elseif preferences.respawns then
+                    -- Let the existing targeted respawn alert handle tracked players.
+                    local duplicate=respawnNotifyActive and isTrackedPlayer(person)
+                    if not duplicate then notify("Player respawned",person.Name .. " has respawned.",4) end
+                end
+            end
+            watchDeath(char)
+        end)
+        if person==Player and person.Character then
+            task.spawn(function() watchDeath(person.Character) end)
+        end
+    end
+    for _,person in ipairs(Players:GetPlayers()) do track(person) end
+    Hub.connect(Players.PlayerAdded,function(person)
+        track(person)
+        if preferences.joins then notify("Player joined",person.Name .. " joined the server.",4) end
+    end)
+    Hub.connect(Players.PlayerRemoving,function(person)
+        local entry=roster[person]
+        roster[person]=nil
+        if entry then disconnect(entry.character);disconnect(entry.death) end
+        if preferences.leaves then notify("Player left",person.Name .. " left the server.",4) end
+    end)
+    Hub.cleanup(function()
+        for _,entry in pairs(roster) do disconnect(entry.character);disconnect(entry.death) end
+        table.clear(roster)
+    end)
 end
 
 MenuGroup:AddButton("Unload", function() Library:Unload() end)
@@ -6780,21 +6845,6 @@ Hub.connect(Player.CharacterAdded, function(char)
     char:WaitForChild("HumanoidRootPart", 5)
     if not Hub.alive or Player.Character ~= char then return end
     if Toggles.PaintDeleteToggle and Toggles.PaintDeleteToggle.Value then setTouchQuery(false) end
-end)
-
--- Player Events
-Hub.connect(Players.PlayerRemoving, function(player)
-	if player:IsFriendsWith(Player.UserId) then
-		notify("Friend Notification", player.Name .. " left", 5)
-	else
-		notify("Leave Notification", (player and player.Name or "Unknown") .. " Left", 5)
-	end
-end)
-
-Hub.connect(Players.PlayerAdded, function(plr)
-	if plr:IsFriendsWith(Player.UserId) then
-		notify("Friend Notification", plr.Name .. " joined", 5)
-	end
 end)
 
 -- Autosave is scheduled after setting changes; no permanent polling loop.
