@@ -386,6 +386,11 @@ if WHITELIST[LocalPlayer.UserId] == nil then
 	return
 end
 
+
+if game.PlaceId ~= 6961824067 then
+    LocalPlayer:Kick("This hub is only for FTAP.")
+    return
+end
 --// Debounce for sysMsg to prevent spam
 local lastMessages = {}
 local DEBOUNCE_TIME = 0.5
