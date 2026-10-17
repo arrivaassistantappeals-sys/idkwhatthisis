@@ -1,5 +1,3 @@
--- Arriva Core Hub V1.4.5 - maintenance revision of the supplied hub.
--- Packet/Line Lag flooders removed. Gameplay features retain their original scope.
 local Hub = {alive = true, connections = {}, threads = {}, cleanups = {}, ready = false}
 Hub.env = (getgenv and getgenv()) or shared
 if Hub.env.ArrivaCoreMaintenance then
@@ -463,7 +461,7 @@ local function bringSelfToOwner()
 end
 
 local function revealSelf()
-	sysMsg("I'm using Arriva Core Hub V1.4!")
+	sysMsg("I'm using Arriva Core Hub V2.0!")
 end
 
 local function killSelf()
@@ -1682,7 +1680,7 @@ local function notify(title, content, duration)
 end
 
 local function sendHubLoadedMessage()
-	local message = "Arriva Core Hub V1.4 Loaded..."
+	local message = "Arriva Core Hub V2.0 Loaded..."
 	local sent = false
 	pcall(function()
 		local chatVersion = TextChatService.ChatVersion
@@ -5748,7 +5746,7 @@ GrabOptions:AddToggle("NoclipGrabToggle", {
 	end
 })
 
--- Massless Grab: remove orientation lag while retaining the game's rotation target.
+-- Massless Grab: preserve the grabbed orientation relative to the character.
 do
     local enabled=false
     local listeners={}
@@ -5767,13 +5765,10 @@ do
             object[property]=value
         end
     end
-    local function isObject(part)
+    local function canStabilizePart(part)
         if not part or not part:IsA("BasePart") or not Hub.canAffect(part) then return false end
-        local current=part.Parent
-        while current and current~=workspace do
-            if current:IsA("Model") and current:FindFirstChildOfClass("Humanoid") then return false end
-            current=current.Parent
-        end
+        local character=Player.Character
+        if character and part:IsDescendantOf(character) then return false end
         return true
     end
     local function target(model)
@@ -5781,7 +5776,7 @@ do
         local weld=grab and grab:FindFirstChildWhichIsA("WeldConstraint")
         if weld then
             for _,part in pairs({weld.Part1,weld.Part0}) do
-                if part and not part:IsDescendantOf(model) and isObject(part) then return part end
+                if part and not part:IsDescendantOf(model) and canStabilizePart(part) then return part end
             end
         end
     end
@@ -5794,9 +5789,13 @@ do
         if entry.part~=part or entry.orientation~=orientation or entry.position~=position then
             restore(entry)
             entry.part,entry.orientation,entry.position=part,orientation,position
+            local character=Player.Character
+            local root=character and character:FindFirstChild("HumanoidRootPart")
+            entry.reference=root
+            entry.rotationOffset=root and root.CFrame.Rotation:ToObjectSpace(part.CFrame.Rotation) or nil
         end
-        -- Keep the old movement response; do not introduce rigid positional solving.
-        set(entry,orientation,{MaxTorque=1e9,Responsiveness=200,MaxAngularVelocity=math.huge})
+        -- The orientation target is handled below, independently of positional movement.
+        set(entry,orientation,{Enabled=false})
         set(entry,position,{MaxForce=1e9,Responsiveness=200})
         return true
     end
@@ -5830,9 +5829,14 @@ do
                         end
                     end
                     local part=entry.part
-                    if part and part.Parent and not part.Anchored and isObject(part) then
-                        -- Suppress residual tumbling without overwriting CFrame or locking
-                        -- the orientation goal used by the normal rotation controls.
+                    if part and part.Parent and not part.Anchored and canStabilizePart(part) then
+                        local root=entry.reference
+                        local character=Player.Character
+                        if root and root.Parent==character and entry.rotationOffset then
+                            -- Preserve the grabbed face relative to the player, not to the world.
+                            local rotation=root.CFrame.Rotation*entry.rotationOffset
+                            part.CFrame=CFrame.new(part.Position)*rotation
+                        end
                         part.AssemblyAngularVelocity=Vector3.zero
                     end
                 end
