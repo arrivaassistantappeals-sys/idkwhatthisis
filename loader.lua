@@ -1,4 +1,4 @@
--- Arriva Core Hub V2.0.5 - maintenance revision of the supplied hub.
+-- Arriva Core Hub 2.0.
 -- Packet/Line Lag flooders removed. Gameplay features retain their original scope.
 local Hub = {alive = true, connections = {}, threads = {}, cleanups = {}, ready = false}
 Hub.env = (getgenv and getgenv()) or shared
@@ -113,7 +113,15 @@ function Hub.captureSettings()
     end
     return Hub.canonical(data)
 end
-function Hub.persistSettings()
+function Hub.persistSettings(explicit)
+    if Hub.configLoading then
+        return false,"Settings are still loading. Wait for loading to finish, then try again."
+    end
+    if explicit then Hub.configLoadFailed=false end
+    if Hub.configLoadFailed then
+        Hub.lastSaveError="Autosave paused to protect an unreadable settings file. Use Save settings to replace it deliberately."
+        return false,Hub.lastSaveError
+    end
     if not Hub.storage or not Hub.saveManager then
         Hub.lastSaveError = "File storage is unavailable"
         return false, Hub.lastSaveError
@@ -143,7 +151,7 @@ function Hub.pollSettings()
     end
 end
 function Hub.requestSave()
-    if not Hub.ready or not Hub.storage then return end
+    if not Hub.ready or not Hub.storage or Hub.configLoading or Hub.configLoadFailed then return end
     if Hub.saveThread then pcall(Hub.nativeTask.cancel, Hub.saveThread); Hub.threads[Hub.saveThread] = nil end
     Hub.saveThread = task.delay(1, function()
         Hub.saveThread = nil
@@ -463,7 +471,7 @@ local function bringSelfToOwner()
 end
 
 local function revealSelf()
-	sysMsg("I'm using Arriva Core Hub V2.0!")
+	sysMsg("I'm using Arriva Core Hub 2.0!")
 end
 
 local function killSelf()
@@ -641,6 +649,7 @@ local function createArrivaSidebar()
     -- commit 3ef72398fb4c8ba6fd1801e98704991d3cc9cbc2; Lucide icons: ISC license.
     -- Only the 15 assets used here are retained; no icon-library script is fetched.
     local iconAssets = {
+        palette={16898613613,453,918},history={16898613509,869,98},bell={16898612819,820,257},
         activity={16898612629,514,771},["user-round-check"]={16898613869,869,404},
         ["door-open"]={16898613044,967,759},["log-out"]={16898613509,820,955},
         ["triangle-alert"]={16898613869,967,0},["circle-alert"]={16898612819,918,808},
@@ -996,9 +1005,26 @@ local function createArrivaSidebar()
         make("ImageLabel",header,{Name="ArrivaLogo",BackgroundTransparency=1,
             Image="rbxassetid://90461919222617",ScaleType=Enum.ScaleType.Fit,
             Position=UDim2.fromOffset(20,11),Size=UDim2.fromOffset(44,44)})
-        local title=text(header,"ARRIVA CORE HUB",{Position=UDim2.fromOffset(78,0),Size=UDim2.new(1,-218,1,0),TextSize=23})
+        local title=text(header,"ARRIVA CORE HUB 2.0",{Position=UDim2.fromOffset(78,8),Size=UDim2.new(1,-218,0,28),TextSize=22})
         local titleFont=Font.fromEnum(Enum.Font.Ubuntu)
         title.FontFace=Font.new(titleFont.Family,Enum.FontWeight.Bold,Enum.FontStyle.Italic)
+        local metrics=text(header,"FPS: --  |  Ping: --",{Name="ClientMetrics",
+            Position=UDim2.fromOffset(80,37),Size=UDim2.new(1,-220,0,18),TextSize=12,TextColor3=colors.muted})
+        local frames,seconds=0,0
+        local metricsConnection=RunService.RenderStepped:Connect(function(dt)
+            if self.destroyed or not self.visible then frames=0;seconds=0;return end
+            frames+=1;seconds+=dt
+            if seconds<0.5 then return end
+            local fps=math.floor(frames/seconds+0.5)
+            local ok,ping=pcall(function() return player:GetNetworkPing()*1000 end)
+            local value="--"
+            if ok and type(ping)=="number" and ping==ping and ping>=0 and ping<math.huge then
+                value=string.format("%.0f ms",ping)
+            end
+            metrics.Text=string.format("FPS: %d  |  Ping: %s",fps,value)
+            frames,seconds=0,0
+        end)
+        Hub.connections[metricsConnection]=true
         make("Frame",root,{Position=UDim2.fromOffset(0,65),Size=UDim2.new(1,0,0,1),BackgroundColor3=colors.line,BorderSizePixel=0})
         local minimize=button(header,"",{Name="Minimize",Position=UDim2.new(1,-122,0,13),Size=UDim2.fromOffset(44,40)})
         local close=button(header,"",{Name="Close",Position=UDim2.new(1,-74,0,13),Size=UDim2.fromOffset(44,40)})
@@ -1006,7 +1032,7 @@ local function createArrivaSidebar()
         icon(minimize,"minus",{AnchorPoint=Vector2.new(0.5,0.5),Position=UDim2.fromScale(0.5,0.5),ImageColor3=colors.text})
         icon(close,"x",{AnchorPoint=Vector2.new(0.5,0.5),Position=UDim2.fromScale(0.5,0.5),ImageColor3=colors.text})
         local body=make("Frame",root,{Position=UDim2.fromOffset(0,66),Size=UDim2.new(1,0,1,-66),BackgroundTransparency=1})
-        local sidebar=make("Frame",body,{Size=UDim2.new(0,204,1,0),BackgroundColor3=colors.sidebar,BorderSizePixel=0})
+        local sidebar=make("Frame",body,{Size=UDim2.new(0,232,1,0),BackgroundColor3=colors.sidebar,BorderSizePixel=0})
         -- Match the outer bottom-left curve; leave the internal seams square.
         round(sidebar,14)
         make("Frame",sidebar,{Name="SidebarTopFill",Size=UDim2.new(1,0,0,14),
@@ -1023,7 +1049,7 @@ local function createArrivaSidebar()
             if child:IsA("UIPadding") then child.PaddingLeft=UDim.new(0,40) end
         end
         self.nav=make("ScrollingFrame",sidebar,{Position=UDim2.fromOffset(14,72),Size=UDim2.new(1,-23,1,-148),
-            BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=3,CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y})
+            BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=4,ScrollBarImageTransparency=0,ScrollingEnabled=true,CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y})
         make("UIListLayout",self.nav,{Padding=UDim.new(0,3),SortOrder=Enum.SortOrder.LayoutOrder})
         local profile=make("Frame",sidebar,{Position=UDim2.new(0,0,1,-64),Size=UDim2.new(1,0,0,64),BackgroundTransparency=1})
         make("Frame",profile,{Size=UDim2.new(1,0,0,1),BackgroundColor3=colors.line,BorderSizePixel=0})
@@ -1031,7 +1057,7 @@ local function createArrivaSidebar()
             Image="rbxthumb://type=AvatarHeadShot&id=" .. tostring(player.UserId) .. "&w=100&h=100"})
         round(avatar,24);stroke(avatar)
         text(profile,player.DisplayName or player.Name,{Position=UDim2.fromOffset(68,0),Size=UDim2.new(1,-78,1,0),Font=Enum.Font.GothamBold,TextSize=15})
-        self.content=make("Frame",body,{Position=UDim2.fromOffset(218,12),Size=UDim2.new(1,-232,1,-24),BackgroundTransparency=1})
+        self.content=make("Frame",body,{Position=UDim2.fromOffset(246,12),Size=UDim2.new(1,-260,1,-24),BackgroundTransparency=1})
         local grip=button(root,"",{Name="Resize",AnchorPoint=Vector2.new(1,1),Position=UDim2.new(1,-9,1,-7),Size=UDim2.fromOffset(22,22),ZIndex=20})
         icon(grip,"arrow-down-right",{Size=UDim2.fromScale(1,1),ZIndex=21})
         local width,height=920,540
@@ -1422,7 +1448,22 @@ local function register(id, kind, info)
     if kind == "Toggle" then Library.Toggles[id] = control else Library.Options[id] = control end
     function control:commit(value)
         self.Value = copy(value)
-        invoke(self.Callback, self.Value)
+        self.revision=(self.revision or 0)+1
+        if Hub.configLoading then
+            local pending=Hub.configCallbacks
+            if pending then
+                local record=pending.byControl[self]
+                if not record then
+                    record={control=self}
+                    pending.byControl[self]=record
+                    table.insert(pending.ordered,record)
+                end
+                record.value=copy(self.Value)
+                record.revision=self.revision
+            end
+        else
+            invoke(self.Callback, self.Value)
+        end
         Hub.requestSave()
     end
     function control:SetValue(value)
@@ -1576,7 +1617,10 @@ end
 function SaveManager:SetIgnoreIndexes(indexes) for _, id in ipairs(indexes) do self.ignored[id] = true end end
 function SaveManager:SetLoadingOrder(value) self.loadingOrder = value end
 function SaveManager:SaveJSON()
-    local data = {objects = {}}
+    local data = {version=2,objects={},safety={
+        whitelistFriends=Hub.whitelistFriends,
+        manualWhitelist=copy(Hub.manualWhitelist or {}),
+    }}
     for id, control in pairs(Library.controls) do
         if not self.ignored[id] then
             if control.Type == "KeyPicker" and control.handle.CurrentKeybind then
@@ -1592,43 +1636,113 @@ function SaveManager:SaveJSON()
     return nil, false, tostring(result)
 end
 function SaveManager:Save(name)
-    local encoded, ok, err = self:SaveJSON()
-    if not ok then return false, err end
-    local success, reason = pcall(function()
+    local encoded,ok,err=self:SaveJSON()
+    if not ok then return false,err end
+    local file=self.folder .. "/" .. name .. ".json"
+    local success,reason=pcall(function()
         if not isfolder("ArrivaCoreHub") then makefolder("ArrivaCoreHub") end
         if not isfolder(self.folder) then makefolder(self.folder) end
-        writefile(self.folder .. "/" .. name .. ".json", encoded)
+        if isfile(file) then
+            local old=readfile(file)
+            local valid,data=pcall(function() return http:JSONDecode(old) end)
+            if valid and type(data)=="table" and type(data.objects)=="table" then
+                writefile(file .. ".bak",old)
+            end
+        end
+        writefile(file,encoded)
+        if readfile(file)~=encoded then error("Settings write could not be verified") end
     end)
-    return success, success and nil or tostring(reason)
+    if not success then return false,tostring(reason) end
+    return true
 end
 function SaveManager:LoadJSON(content)
-    local ok, data = pcall(function() return http:JSONDecode(content) end)
-    if not ok or type(data) ~= "table" or type(data.objects) ~= "table" then return false, "Invalid configuration" end
-    for _, record in ipairs(data.objects) do
-        local control = Library.controls[record.idx]
-        if control and not self.ignored[record.idx] then
-            local value = record.value
-            if control.Type == "KeyPicker" then value = record.key or record.value end
-            control:SetValue(value)
+    if type(content)~="string" then return false,"Configuration content is not text" end
+    content=content:gsub("^\239\187\191",""):gsub("%z+$","")
+    local ok,data=pcall(function() return http:JSONDecode(content) end)
+    if not ok or type(data)~="table" or type(data.objects)~="table" then
+        return false,"Configuration JSON could not be read: " .. tostring(data)
+    end
+    if type(data.safety)=="table" and type(data.safety.manualWhitelist)=="table" then
+        Hub.manualWhitelist=copy(data.safety.manualWhitelist)
+        if type(data.safety.whitelistFriends)=="boolean" then Hub.whitelistFriends=data.safety.whitelistFriends end
+        Hub.loadedSafety=true
+    end
+    local errors={}
+    for _,record in ipairs(data.objects) do
+        if type(record)=="table" then
+            local control=Library.controls[record.idx]
+            if control and not self.ignored[record.idx] then
+                local value=record.value
+                if control.Type=="KeyPicker" then value=record.key or record.value end
+                local applied,reason=pcall(function() control:SetValue(value) end)
+                if not applied then table.insert(errors,tostring(record.idx) .. ": " .. tostring(reason)) end
+            end
         end
     end
+    if Hub.refreshWhitelistUI then pcall(Hub.refreshWhitelistUI) end
+    if #errors>0 then return false,"Some settings could not load: " .. table.concat(errors,"; ") end
     return true
 end
 function SaveManager:Load(name)
-    local file = self.folder .. "/" .. name .. ".json"
-    if not isfile(file) then file = (self.legacyFolder or "ArrivaCoreHub/Configs/settings") .. "/" .. name .. ".json" end
-    if not isfile(file) then return false, "No saved configuration" end
-    local ok, content = pcall(readfile, file)
-    if not ok then return false, tostring(content) end
-    return self:LoadJSON(content)
+    if Hub.configLoading then return false,"A settings load is already in progress" end
+    if Hub.saveThread then pcall(Hub.nativeTask.cancel,Hub.saveThread);Hub.threads[Hub.saveThread]=nil;Hub.saveThread=nil end
+    local candidates={self.folder .. "/" .. name .. ".json",self.folder .. "/" .. name .. ".json.bak",
+        (self.legacyFolder or "ArrivaCoreHub/Configs/settings") .. "/" .. name .. ".json"}
+    local found=false
+    local failures={}
+    for _,file in ipairs(candidates) do
+        local existsOk,exists=pcall(isfile,file)
+        if not existsOk then
+            Hub.configLoadFailed=true;Hub.lastLoadError=tostring(exists)
+            return false,Hub.lastLoadError
+        end
+        if exists then
+            found=true
+            local readOk,content=pcall(readfile,file)
+            if readOk then
+                Hub.configCallbacks={ordered={},byControl={}}
+                Hub.configLoading=true
+                local called,loaded,reason=pcall(function() return self:LoadJSON(content) end)
+                Hub.configLoading=false
+                local pending=Hub.configCallbacks
+                Hub.configCallbacks=nil
+                if called and loaded then
+                    Hub.configLoadFailed=false;Hub.lastLoadError=nil
+                    Hub.configLoaded=true;Hub.lastLoadPath=file
+                    Hub.lastSettings=Hub.captureSettings()
+                    -- Starting a saved feature must never hold the settings loader open.
+                    for _,record in ipairs(pending.ordered) do
+                        task.defer(function()
+                            local control=record.control
+                            if Hub.alive and control.revision==record.revision then
+                                invoke(control.Callback,record.value)
+                            end
+                        end)
+                    end
+                    return true
+                end
+                table.insert(failures,file .. ": " .. tostring(called and reason or loaded))
+            else table.insert(failures,file .. ": " .. tostring(content)) end
+        end
+    end
+    Hub.configLoading=false
+    Hub.configLoadFailed=found
+    Hub.lastLoadError=found and table.concat(failures," | ") or nil
+    return false,Hub.lastLoadError or "No saved configuration"
 end
 function SaveManager:BuildConfigSection(tab)
     local group = tab:AddLeftGroupbox("Saved settings")
-    group:AddButton({Text = "Load saved settings", Func = function()
-        local ok, err = self:Load("AutoSave")
-        Library:Notify({Title = "Config", Description = ok and "Settings loaded." or tostring(err)})
+    group:AddButton({Text="Save settings",Func=function()
+        -- This explicit action can replace a file after an unsuccessful load.
+        local ok,err=Hub.persistSettings(true)
+        Library:Notify({Title=ok and "Settings saved" or "Save error",Description=ok and "Your current settings were saved and verified." or tostring(err),Time=6})
     end})
-    group:AddLabel("Settings are saved automatically.")
+    group:AddButton({Text = "Load settings", Func = function()
+        local ok, err = self:Load("AutoSave")
+        if not ok then warn("[Arriva config load] " .. tostring(err)) end
+        Library:Notify({Title = ok and "Settings loaded" or "Load error", Description = ok and "Your saved settings were restored." or tostring(err),Time=10})
+    end})
+    group:AddLabel("Autosave starts after loading finishes. Existing settings are protected if loading fails. Save settings replaces them only when you choose it.")
 end
 function ThemeManager:SetLibrary(value) self.library = value end
 function ThemeManager:SetFolder(value) self.folder = value end
@@ -1675,11 +1789,11 @@ local Window = Library:CreateWindow({
 
 local Tabs = {
 	Defense = Window:AddTab("Defense", "shield"),
-	AntiLag = Window:AddTab("Anti Lag", "activity"),
-    Customization = Window:AddTab("Menu Customization", "settings"),
-    Updates = Window:AddTab("Update Log", "sparkles"),
-    Notifications = Window:AddTab("Notifications", "info"),
     Whitelist = Window:AddTab("Whitelist", "user-round-check"),
+	AntiLag = Window:AddTab("Anti Lag", "activity"),
+    Customization = Window:AddTab("Menu Customization", "palette"),
+    Updates = Window:AddTab("Update Log", "history"),
+    Notifications = Window:AddTab("Notifications", "bell"),
 	Target = Window:AddTab("Loop Players", "crosshair"),
 	Aura = Window:AddTab("Auras", "align-vertical-space-around"),
 	Grab = Window:AddTab("Grab Settings", "hand"),
@@ -1743,7 +1857,7 @@ local function notify(title, content, duration)
 end
 
 local function sendHubLoadedMessage()
-	local message = "Arriva Core Hub V2.0 Loaded..."
+	local message = "Arriva Core Hub 2.0 Loaded..."
 	local sent = false
 	pcall(function()
 		local chatVersion = TextChatService.ChatVersion
@@ -1809,6 +1923,8 @@ local function setTouchQuery(state)
 end
 
 -- Anti-Gucci Systems
+Hub.gucciAutoDelete=true
+Hub.gucciCleanupGeneration=0
 local antiGucciConnection
 local safePosition
 local restoreFrames = 0
@@ -1825,8 +1941,36 @@ local function spawnBlobman()
 end
 
 local function startAntiGucci()
+    local previous=Hub.gucciRun
+    if previous and previous.busy and previous.character==Player.Character
+        and previous.generation==Hub.blobGeneration then return end
     Hub.blobGeneration = (Hub.blobGeneration or 0) + 1
     local generation = Hub.blobGeneration
+    local run={busy=true,character=Player.Character,generation=generation}
+    -- Experimental pacing, not verification that the server accepted a state change.
+    local lastPingSample=-math.huge
+    local smoothedPing
+    local function pacing()
+        local now=os.clock()
+        if now-lastPingSample>=1 then
+            lastPingSample=now
+            local ok,ping=pcall(function() return Player:GetNetworkPing() end)
+            if ok and type(ping)=="number" and ping==ping and ping>=0 and ping<math.huge then
+                smoothedPing=smoothedPing and smoothedPing*0.65+ping*0.35 or ping
+            elseif not smoothedPing then smoothedPing=0.1 end
+            run.pingMs=smoothedPing*1000
+        end
+        -- Preserve the existing low-ping path. Bound extra waits to avoid
+        -- turning one activation into an indefinitely long operation.
+        local extra=math.clamp((smoothedPing or 0.1)-0.05,0,0.15)
+        run.phaseDelay=extra
+        return extra
+    end
+    Hub.gucciRun=run
+    Hub.gucciStage="Preparing"
+    if Hub.updateGucciStatus then Hub.updateGucciStatus() end
+    task.spawn(function()
+    local ok,err=xpcall(function()
     if Hub.blobJump then Hub.blobJump:Disconnect(); Hub.blobJump = nil end
     if antiGucciConnection then antiGucciConnection:Disconnect(); antiGucciConnection = nil end
     local char = Player.Character
@@ -1871,6 +2015,12 @@ local function startAntiGucci()
     if not valid() then return end
     -- Spawn replication may finish after spawnBlobman returns.
     local head = blob:FindFirstChild("Head")
+    local headDeadline=os.clock()+5
+    while valid() and blob.Parent and not head and os.clock()<headDeadline do
+        task.wait(0.1)
+        head=blob:FindFirstChild("Head")
+    end
+    if not valid() or not blob.Parent then return end
     if not (head and head:IsA("BasePart")) then
         notify("Anti Gucci", "Blobman head is not ready; try again.", 4)
         return
@@ -1881,14 +2031,18 @@ local function startAntiGucci()
     task.wait(0.2)
     if not valid() or not seat:IsDescendantOf(Workspace) then return end
     root.CFrame = seat.CFrame + Vector3.new(0, 2, 0)
-    task.spawn(function()
+    Hub.gucciStage="Activating"
+    if Hub.updateGucciStatus then Hub.updateGucciStatus() end
         task.wait(0.25)
-        for _ = 1, 30 do
+        local completedCycles=0
+        for _ = 1, 50 do
+            local phaseDelay=pacing()
             if not valid() or not seat:IsDescendantOf(Workspace) then break end
             local ok, err = pcall(function()
                 seat:Sit(hum)
                 if ragdollRemoteEvent then Hub.fire(ragdollRemoteEvent, root, 0.1) end
-                if not valid() then return end
+                if phaseDelay>0 then task.wait(phaseDelay) end
+                if not valid() or not seat:IsDescendantOf(Workspace) then return end
                 hum.Sit = false
                 hum:ChangeState(Enum.HumanoidStateType.GettingUp)
                 if not valid() then return end
@@ -1896,8 +2050,54 @@ local function startAntiGucci()
                 hum:ChangeState(Enum.HumanoidStateType.Jumping)
             end)
             if not ok then warn("[Arriva Anti Gucci] " .. tostring(err)); break end
-            task.wait()
+            if not valid() or not seat:IsDescendantOf(Workspace) then break end
+            completedCycles+=1
+            task.wait(phaseDelay>0 and phaseDelay or nil)
         end
+        if not valid() or completedCycles~=50 then return end
+        run.cyclesFinishedAt=os.clock()
+        if Hub.gucciAutoDelete then
+        run.cleanupPending=true
+        local cleanupTicket=Hub.gucciCleanupGeneration
+        task.delay(2,function()
+            if not Hub.gucciAutoDelete or cleanupTicket~=Hub.gucciCleanupGeneration then return end
+            if not valid() or Hub.gucciRun~=run then return end
+            local ownFolder=Workspace:FindFirstChild(Player.Name .. "SpawnedInToys")
+            -- Remove only the exact owned toy used in this activation.
+            if not ownFolder or blob.Parent~=ownFolder then
+                run.cleanupPending=false
+                return
+            end
+            local menu=ReplicatedStorage:FindFirstChild("MenuToys")
+            local destroy=menu and menu:FindFirstChild("DestroyToy")
+            if not destroy then
+                run.cleanupPending=false
+                notify("Gucci cleanup warning","Toy removal is unavailable. Your Blobman was left in place.",5)
+                return
+            end
+            run.intentionalRemoval=true
+            local removed,reason=pcall(function() Hub.fire(destroy,blob) end)
+            if not removed then
+                run.intentionalRemoval=false;run.cleanupPending=false
+                notify("Gucci cleanup warning",tostring(reason),5)
+                return
+            end
+            local deadline=os.clock()+3
+            while valid() and blob.Parent==ownFolder and os.clock()<deadline do task.wait(0.1) end
+            if not valid() or Hub.gucciRun~=run then return end
+            run.cleanupPending=false
+            run.removedIntentionally=blob.Parent~=ownFolder
+            if not run.removedIntentionally then
+                run.intentionalRemoval=false
+                notify("Gucci cleanup warning","The toy removal was not confirmed. No extra activation was started.",5)
+            elseif Hub.gucciStage=="Sequence finished - unverified" then
+                Hub.gucciStage="Blobman removed - unverified"
+                if Hub.updateGucciStatus then Hub.updateGucciStatus() end
+            end
+        end)
+        end
+        Hub.gucciStage="Releasing"
+        if Hub.updateGucciStatus then Hub.updateGucciStatus() end
         -- Finish before returning, rather than racing a separate return task.
         if valid() then
             hum.Sit = false
@@ -1932,12 +2132,22 @@ local function startAntiGucci()
                 root.CFrame = returnCFrame
                 root.AssemblyLinearVelocity = Vector3.zero
                 root.AssemblyAngularVelocity = Vector3.zero
+                run.ready=true
             end
         end
+    end,debug.traceback)
+    run.busy=false
+    if Hub.gucciRun==run and generation==Hub.blobGeneration then
+        Hub.gucciStage=not ok and "Error" or run.ready and (run.removedIntentionally and "Blobman removed - unverified" or "Sequence finished - unverified") or "Not ready"
+        if Hub.updateGucciStatus then Hub.updateGucciStatus() end
+        if not ok then warn("[Arriva Gucci] " .. tostring(err)) end
+    end
     end)
 end
 
 local function stopAntiGucci()
+    Hub.gucciStage="Disabled"
+    if Hub.updateGucciStatus then Hub.updateGucciStatus() end
     Hub.blobGeneration = (Hub.blobGeneration or 0) + 1
     if Hub.blobJump then Hub.blobJump:Disconnect(); Hub.blobJump = nil end
 	if antiGucciConnection then 
@@ -2023,6 +2233,9 @@ local function stopAntiGucciTrain()
 end
 
 Hub.connect(Player.CharacterRemoving, function()
+    Hub.gucciRespawnReadyAt=math.huge
+    Hub.gucciStage="Waiting for respawn"
+    if Hub.updateGucciStatus then Hub.updateGucciStatus() end
     Hub.blobGeneration = (Hub.blobGeneration or 0) + 1
     Hub.trainGeneration = (Hub.trainGeneration or 0) + 1
     if antiGucciConnection then antiGucciConnection:Disconnect(); antiGucciConnection = nil end
@@ -2034,6 +2247,7 @@ Hub.connect(Player.CharacterAdded, function(char)
     local root = char:WaitForChild("HumanoidRootPart", 5)
     local hum = char:WaitForChild("Humanoid", 5)
     if not root or not hum or Player.Character ~= char then return end
+    Hub.gucciRespawnReadyAt=os.clock()+1.5
     task.wait(1.5)
     if not Hub.alive or Player.Character ~= char or not root.Parent or hum.Health <= 0 then return end
     if Toggles.AutoGucciBlobToggle and Toggles.AutoGucciBlobToggle.Value then task.spawn(startAntiGucci) end
@@ -2044,6 +2258,9 @@ end)
 do
     local group=Tabs.AntiLag:AddRightGroupbox("Connection & Client Health")
     local pingOn,framesOn=false,false
+    local disconnectOn=false
+    local disconnectLimit,disconnectSeconds=1500,10
+    local disconnectBad,disconnectSent=0,false
     local pingLimit,fpsLimit,holdSeconds=350,20,3
     local connection
     local elapsed,frames,worstFrame=0,0,0
@@ -2077,28 +2294,45 @@ do
         if connection then connection:Disconnect();connection=nil end
         elapsed,frames,worstFrame=0,0,0
         reset(pingState);reset(fpsState);unavailable=false
-        if not pingOn and not framesOn then return end
+        disconnectBad,disconnectSent=0,false
+        if not pingOn and not framesOn and not disconnectOn then return end
         connection=Hub.connect(RunService.Heartbeat,function(dt)
             elapsed+=dt;frames+=1;worstFrame=math.max(worstFrame,dt)
             if elapsed<1 then return end
             local seconds=elapsed
-            if pingOn then
+            if pingOn or disconnectOn then
                 local ok,ping=pcall(function() return Player:GetNetworkPing()*1000 end)
                 if ok and type(ping)=="number" and ping==ping and ping>=0 and ping<math.huge then
                     unavailable=false
-                    observe(pingState,ping>pingLimit,ping<pingLimit*0.8,
-                        math.min(seconds,1.5),"Connection warning",
-                        string.format("Your network ping is %.0f ms (limit %.0f ms). Cause unknown; this does not identify a player.",ping,pingLimit))
-                elseif not unavailable then
-                    unavailable=true;reset(pingState)
-                    notify("Connection warning","Ping measurement is unavailable on this client.",5)
+                    if pingOn then
+                        observe(pingState,ping>pingLimit,ping<pingLimit*0.8,
+                            math.min(seconds,1.5),"Connection warning",
+                            string.format("Your network ping is %.0f ms (limit %.0f ms). ",ping,pingLimit))
+                    end
+                    if disconnectOn and ping>disconnectLimit then
+                        -- A long stalled frame does not prove ping was high throughout it.
+                        disconnectBad+=math.min(seconds,1.5)
+                        if disconnectBad>=disconnectSeconds and not disconnectSent then
+                            disconnectSent=true
+                            local kicked,reason=pcall(function()
+                                Player:Kick(string.format("Connection protection: ping stayed above %.0f ms for %d seconds.",disconnectLimit,disconnectSeconds))
+                            end)
+                            if not kicked then notify("Connection error","Could not disconnect: " .. tostring(reason),6) end
+                        end
+                    else disconnectBad=0;disconnectSent=false end
+                else
+                    disconnectBad=0
+                    if not unavailable then
+                        unavailable=true;reset(pingState)
+                        notify("Connection warning","Ping measurement is unavailable on this client. Automatic disconnect cannot act on missing measurements.",5)
+                    end
                 end
             end
             if framesOn then
                 local fps=frames/seconds
                 observe(fpsState,fps<fpsLimit,fps>fpsLimit+5,
                     math.min(seconds,1.5),"Client performance warning",
-                    string.format("Heartbeat rate averaged %.0f/s; longest frame %.0f ms. Local performance issue detected; cause unknown.",fps,worstFrame*1000))
+                    string.format("Heartbeat rate averaged %.0f/s; longest frame %.0f ms. Local performance issue detected.",fps,worstFrame*1000))
             end
             elapsed,frames,worstFrame=0,0,0
         end)
@@ -2113,7 +2347,14 @@ do
         Callback=function(value) fpsLimit=value;reset(fpsState) end})
     group:AddSlider("HealthSustainSeconds",{Text="Sustained spike duration (seconds)",Default=3,Min=1,Max=15,Rounding=0,
         Callback=function(value) holdSeconds=value;reset(pingState);reset(fpsState) end})
-    group:AddLabel("Alerts only. 30-second repeat cooldown; recovery alerts use a separate lower threshold.")
+    group:AddLabel("Alerts have a 30-second repeat cooldown. Automatic disconnect below affects only you.")
+    group:AddToggle("HealthDisconnectOnPing",{Text="Disconnect me on sustained high ping",Default=false,
+        Callback=function(on) disconnectOn=on;updateConnection() end})
+    group:AddSlider("HealthDisconnectPingLimit",{Text="Disconnect ping threshold (ms)",Default=1500,Min=250,Max=10000,Rounding=0,
+        Callback=function(value) disconnectLimit=value;disconnectBad=0;disconnectSent=false end})
+    group:AddSlider("HealthDisconnectDelay",{Text="Disconnect after high ping (seconds)",Default=10,Min=3,Max=60,Rounding=0,
+        Callback=function(value) disconnectSeconds=value;disconnectBad=0;disconnectSent=false end})
+    group:AddLabel("A completely frozen client cannot run this check. High ping does not identify the cause or an abusive player.")
     Hub.cleanup(function() if connection then connection:Disconnect();connection=nil end end)
 end
 
@@ -2803,7 +3044,7 @@ local function startAuto()
                 if not Hub.alive or not autoOn or autoActive then return end
                 autoActive=true
                 applyAntiLag()
-                notify("Auto Anti Lag", "Line burst detected; local Anti Lag enabled temporarily.",5)
+                notify("Auto Anti Lag", "Line burst detected, local Anti Lag enabled temporarily.",5)
             end)
         end
     end)
@@ -2815,8 +3056,8 @@ local function startAuto()
         if autoActive and os.clock()-lastLine>=quietSeconds then
             autoActive=false;count=0
             applyAntiLag()
-            notify("Auto Anti Lag",manualOn and "Line burst settled; manual Anti Lag remains enabled."
-                or "Line burst settled; previous Anti Lag setting restored.",4)
+            notify("Auto Anti Lag",manualOn and "Line burst settled, manual Anti Lag remains enabled."
+                or "Line burst settled, previous Anti Lag setting restored.",4)
         end
     end)
 end
@@ -2852,7 +3093,7 @@ AutoLagGroup:AddButton({Text = "Anti Lag status", Func = function()
     end
     local message = string.format("%s | Line scripts disabled: %d/%d | Foreign beams removed: %d",
         state.on and "On" or "Off", disabled, scripts, state.removed)
-    if state.on and scripts == 0 then message ..= " | CharacterAndBeamMove not found yet; watching for it." end
+    if state.on and scripts == 0 then message ..= " | CharacterAndBeamMove not found yet, watching for it." end
     notify("Anti Lag", message, 8)
 end})
 end
@@ -2942,7 +3183,7 @@ end
     local function start()
         if alive then return end
         gui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
-        if not gui then notify("Movement warning", "PlayerGui is unavailable; enable the monitor again when loaded.", 8); return end
+        if not gui then notify("Movement warning", "PlayerGui is unavailable, enable the monitor again when loaded.", 8); return end
         alive = true
         table.insert(connections, gui.DescendantAdded:Connect(observe))
         for _, descendant in ipairs(gui:GetDescendants()) do observe(descendant) end
@@ -2956,11 +3197,11 @@ end
         end,
     })
     DefenseGroup:AddButton({Text = "Movement warning count", Func = function()
-        notify("Movement warning", tostring(count) .. " observed this session | " .. (alive and "Monitoring" or "Off") .. " | Not the server strike count.", 8)
+        notify("Movement warning", tostring(count) .. " observed this session | " .. (alive and "Monitoring" or "Off"), 8)
     end})
     DefenseGroup:AddButton({Text = "Clear observed warning count", Func = function()
         count = 0
-        notify("Movement warning", "Local display counter cleared. Server state is unchanged.", 6)
+        notify("Movement warning", "Local display counter cleared.", 6)
     end})
 end
 -- WARNING MONITOR END
@@ -2982,55 +3223,61 @@ DefenseExtra:AddToggle("PaintDeleteToggle", {
 	end
 })
 
--- Auto Gucci System (Blobman)
-local autoGucciActive = false
-local autoGucciActiveMonitorGeneration = 0
-DefenseExtra:AddToggle("AutoGucciBlobToggle", {
-	Text = "Anti Gucci",
-	Default = false,
-	Callback = function(Value)
-		autoGucciActive = Value
-        autoGucciActiveMonitorGeneration += 1
-        local monitorTicket = autoGucciActiveMonitorGeneration
-
-		if Value then
-			startAntiGucci()
-			notify("system", "auto gucci active (monitoring)", 3)
-
-			task.spawn(function()
-				while autoGucciActive and Hub.alive and monitorTicket == autoGucciActiveMonitorGeneration do
-					local toysFolder = Workspace:FindFirstChild(Player.Name .. "SpawnedInToys")
-					local blobExists = toysFolder and toysFolder:FindFirstChild("CreatureBlobman")
-
-					if not blobExists then
-						stopAntiGucci() 
-						spawnBlobman() 
-						notify("System", "blobman lost", 3)
-
-						local retries = 0
-						repeat
-							task.wait(0.2)
-							retries = retries + 1
-							toysFolder = Workspace:FindFirstChild(Player.Name .. "SpawnedInToys")
-						until (toysFolder and toysFolder:FindFirstChild("CreatureBlobman")) or retries > 25 or not autoGucciActive or monitorTicket ~= autoGucciActiveMonitorGeneration
-
-						if autoGucciActive and monitorTicket == autoGucciActiveMonitorGeneration and toysFolder and toysFolder:FindFirstChild("CreatureBlobman") then
-							startAntiGucci()
-							notify("System", "blobman restored.", 3)
-						end
-					end
-					task.wait(0.5) 
-				end
-			end)
-		else
-			autoGucciActive = false
-			stopAntiGucci()
-			notify("System", "auto gucci disabled.", 3)
-		end
-	end
+-- Auto Gucci System (Blobman): one monitor and one activation at a time.
+do
+local enabled=false
+local monitorGeneration=0
+local status=DefenseExtra:AddLabel("Gucci: Disabled")
+Hub.updateGucciStatus=function() status:SetText("Gucci: " .. (Hub.gucciStage or "Disabled")) end
+DefenseExtra:AddToggle("GucciAutoDeleteBlob",{
+    Text="Auto-delete Blobman after Gucci",Default=true,
+    Callback=function(on)
+        Hub.gucciAutoDelete=on
+        Hub.gucciCleanupGeneration=(Hub.gucciCleanupGeneration or 0)+1
+        local run=Hub.gucciRun
+        if not on and run and not run.intentionalRemoval then run.cleanupPending=false end
+    end,
 })
+DefenseExtra:AddToggle("AutoGucciBlobToggle",{
+    Text="Anti Gucci",Default=false,
+    Callback=function(on)
+        enabled=on
+        monitorGeneration+=1
+        local ticket=monitorGeneration
+        if not on then stopAntiGucci();return end
+        startAntiGucci()
+        task.spawn(function()
+            local nextRetry=os.clock()+8
+            while enabled and Hub.alive and ticket==monitorGeneration do
+                task.wait(0.5)
+                if not enabled or not Hub.alive or ticket~=monitorGeneration then return end
+                local char=Player.Character
+                local hum=char and char:FindFirstChildOfClass("Humanoid")
+                local root=char and char:FindFirstChild("HumanoidRootPart")
+                local folder=Workspace:FindFirstChild(Player.Name .. "SpawnedInToys")
+                local blob=folder and folder:FindFirstChild("CreatureBlobman")
+                local run=Hub.gucciRun
+                local busy=run and run.busy and run.generation==Hub.blobGeneration
+                local intentional=run and run.generation==Hub.blobGeneration
+                    and (run.cleanupPending or run.intentionalRemoval or run.removedIntentionally)
+                if char and hum and root and hum.Health>0 and not busy and not intentional and os.clock()>=nextRetry
+                    and os.clock()>=(Hub.gucciRespawnReadyAt or 0)
+                    and (not blob or Hub.gucciStage=="Not ready" or Hub.gucciStage=="Error") then
+                    nextRetry=os.clock()+8
+                    startAntiGucci()
+                end
+            end
+        end)
+    end,
+})
+Hub.cleanup(function()
+    enabled=false;monitorGeneration+=1
+    Hub.blobGeneration=(Hub.blobGeneration or 0)+1
+    Hub.updateGucciStatus=nil
+end)
+end
 
-
+-- Gucci remains unverified: transient local attachment changes are not proof of release.
 -- De-Sync System (Train)
 local autoGucciActiveTrain = false
 local autoGucciActiveTrainMonitorGeneration = 0
@@ -4051,6 +4298,7 @@ PlayerView:AddToggle("SelfNoclipToggle", {
 local TargetGroup = Tabs.Target:AddLeftGroupbox("Target Interaction")
 local BlobGroup = Tabs.Target:AddRightGroupbox("Blobman Control")
 local WhitelistGroup = Tabs.Whitelist:AddLeftGroupbox("Protected Players")
+local TargetNotificationGroup = Tabs.Notifications:AddLeftGroupbox("Target Alerts")
 
 local SelectedPlayer = nil
 local kickLoopEnabled = false
@@ -5494,7 +5742,7 @@ end
 -- Joined Notify
 local notifyActive = false
 local notifyConnection = nil
-WhitelistGroup:AddToggle("JoinedNotifyBtn", {
+TargetNotificationGroup:AddToggle("JoinedNotifyBtn", {
 	Text = "Target Joined Notify",
 	Default = false,
 	Callback = function(on)
@@ -5574,7 +5822,7 @@ local function trackRespawn(player)
 	end)
 end
 
-WhitelistGroup:AddToggle("RespawnNotifyBtn", {
+TargetNotificationGroup:AddToggle("RespawnNotifyBtn", {
 	Text = "Target Respawn Notify",
 	Default = false,
 	Callback = function(on)
@@ -6461,7 +6709,7 @@ MiscGroup:AddLabel("Anchor Object Bind"):AddKeyPicker("AnchorObjectKey", {
             local part=attachment and attachment.Parent
             if part and part:IsA("BasePart") and not part:IsDescendantOf(original) then heldPart=part end
         end
-        if not heldPart then notify("Anchor Object","Grab an object first; its attachment was not found.",4);return end
+        if not heldPart then notify("Anchor Object","Grab an object first, its attachment was not found.",4);return end
         local targetModel=heldPart:FindFirstAncestorOfClass("Model")
         if not targetModel then targetModel=heldPart end
         local ancestor=heldPart.Parent
@@ -6765,7 +7013,7 @@ if not ok then warn("[Arriva auto execute] " .. tostring(err)) end
     end})
 end
 do
-    local section0=Tabs.Updates:AddLeftGroupbox("Latest update")
+    local section0=Tabs.Updates:AddLeftGroupbox("Version 2.0")
     section0:AddLabel("The menu has had a bit of a tidy-up. There are more ways to make it yours, notifications are clearer, and the larger settings groups now have their own tabs.")
     section0:AddLabel("Your saved settings still use the same controls, so moving things around should not mean setting everything up again.")
     local section1=Tabs.Updates:AddLeftGroupbox("A little more Arriva")
@@ -6916,7 +7164,7 @@ Library.ToggleKeybind = Options.MenuKeybind
 
 -- Session customization does not require executor file-storage support.
 ThemeManager:ApplyToTab(Tabs.Customization)
-Hub.storage = isfile and readfile and writefile and isfolder and makefolder and listfiles
+Hub.storage = type(isfile)=="function" and type(readfile)=="function" and type(writefile)=="function" and type(isfolder)=="function" and type(makefolder)=="function"
 if Hub.storage then
     local ok, err = pcall(function()
         ThemeManager:SetLibrary(Library)
@@ -6926,10 +7174,10 @@ if Hub.storage then
         ThemeManager:SetFolder("ArrivaCoreHub")
         SaveManager:SetFolder("ArrivaCoreHub/Configs")
         SaveManager:BuildConfigSection(Tabs["UI Settings"])
-        if isfile("ArrivaCoreHub/RayfieldConfigs/AutoSave.json") or isfile("ArrivaCoreHub/Configs/settings/AutoSave.json") then
-            local success, loadError = SaveManager:Load("AutoSave")
-            if success then notify("Config", "Your saved settings were loaded.")
-            else notify("Config", "Could not load settings: " .. tostring(loadError)) end
+        local success,loadError=SaveManager:Load("AutoSave")
+        if success then notify("Config","Your saved settings were loaded.")
+        elseif loadError~="No saved configuration" then
+            notify("Config warning","Settings could not load. Autosave is paused to protect the existing file. " .. tostring(loadError),10)
         end
     end)
     if not ok then Hub.storage = false; notify("Config", tostring(err)) end
@@ -6938,18 +7186,18 @@ else
 end
 -- Defer until SaveManager's deferred load callbacks have finished.
 task.defer(function()
-    Hub.readSafety()
+    if not Hub.loadedSafety then Hub.readSafety() end
     if Hub.refreshWhitelistUI then Hub.refreshWhitelistUI() end
+    Hub.lastSettings=Hub.captureSettings()
     Hub.ready = true
+    if not Hub.configLoaded and not Hub.configLoadFailed then Hub.requestSave() end
 end)
-MenuGroup:AddButton({Text = "Save now", Func = function()
-    if not Hub.storage then notify("Config", "File storage is unavailable."); return end
-    local ok, err = Hub.persistSettings()
-    notify("Config", ok and "All supported settings saved." or "Save failed: " .. tostring(err))
-end})
 MenuGroup:AddButton({Text = "Save status", Func = function()
     local message = "Storage: " .. (Hub.storage and "available" or "unavailable")
         .. " | Last successful save: " .. (Hub.lastSaveAt or "none this session")
+    if Hub.lastLoadPath then message ..= " | Loaded: " .. Hub.lastLoadPath end
+    if Hub.configLoadFailed then message ..= " | Autosave paused: load failed" end
+    if Hub.lastLoadError then message ..= " | Load error: " .. Hub.lastLoadError;warn("[Arriva config load] " .. Hub.lastLoadError) end
     if Hub.lastSaveError then message ..= " | Save error: " .. Hub.lastSaveError end
     if Hub.lastSnapshotError then message ..= " | Snapshot error: " .. Hub.lastSnapshotError end
     notify("Config", message, 8)
@@ -6993,4 +7241,4 @@ end)
 
 -- Send loaded message
 
-notify("Arriva Core Hub", "Sidebar edition loaded. Your existing controls and callbacks are retained.", 5)
+notify("Arriva Core Hub 2.0", "Hub loaded. Your saved settings and controls are ready.", 5)
