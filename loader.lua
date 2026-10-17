@@ -979,7 +979,7 @@ local function createArrivaSidebar()
         self.defaultGlowColor=gradient.Color
         local header=make("Frame",root,{Size=UDim2.new(1,0,0,66),BackgroundTransparency=1,Active=true})
         make("ImageLabel",header,{Name="ArrivaLogo",BackgroundTransparency=1,
-            Image="rbxassetid://84122605493729",ScaleType=Enum.ScaleType.Fit,
+            Image="rbxassetid://90461919222617",ScaleType=Enum.ScaleType.Fit,
             Position=UDim2.fromOffset(20,11),Size=UDim2.fromOffset(44,44)})
         local title=text(header,"ARRIVA CORE HUB",{Position=UDim2.fromOffset(78,0),Size=UDim2.new(1,-218,1,0),TextSize=23})
         local titleFont=Font.fromEnum(Enum.Font.Ubuntu)
