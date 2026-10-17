@@ -1,4 +1,4 @@
--- Arriva Core Hub V1.4.5 - maintenance revision of the supplied hub.
+-- Arriva Core Hub V2.0.5 - maintenance revision of the supplied hub.
 -- Packet/Line Lag flooders removed. Gameplay features retain their original scope.
 local Hub = {alive = true, connections = {}, threads = {}, cleanups = {}, ready = false}
 Hub.env = (getgenv and getgenv()) or shared
@@ -466,7 +466,7 @@ local function bringSelfToOwner()
 end
 
 local function revealSelf()
-	sysMsg("I'm using Arriva Core Hub V1.4!")
+	sysMsg("I'm using Arriva Core Hub V2.0!")
 end
 
 local function killSelf()
@@ -1691,7 +1691,7 @@ local function notify(title, content, duration)
 end
 
 local function sendHubLoadedMessage()
-	local message = "Arriva Core Hub V1.4 Loaded..."
+	local message = "Arriva Core Hub V2.0 Loaded..."
 	local sent = false
 	pcall(function()
 		local chatVersion = TextChatService.ChatVersion
