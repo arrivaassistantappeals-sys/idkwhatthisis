@@ -2,6 +2,11 @@
 -- Packet/Line Lag flooders removed. Gameplay features retain their original scope.
 local Hub = {alive = true, connections = {}, threads = {}, cleanups = {}, ready = false}
 Hub.env = (getgenv and getgenv()) or shared
+if type(Hub.env.ArrivaCoreStarting)=="number" and os.clock()-Hub.env.ArrivaCoreStarting>=0 and os.clock()-Hub.env.ArrivaCoreStarting<8 then
+    warn("[Arriva] A startup is already running, wait before executing again.");return
+end
+Hub.env.ArrivaCoreStarting=os.clock()
+Hub.startupBegan=os.clock()
 if Hub.env.ArrivaCoreMaintenance then
 	pcall(Hub.env.ArrivaCoreMaintenance)
 end
@@ -36,7 +41,7 @@ function Hub.schedule(method, delay, callback, ...)
 	local thread = coroutine.create(function()
 		local ok, err = xpcall(function() callback(table.unpack(args, 1, args.n)) end, debug.traceback)
 		Hub.threads[coroutine.running()] = nil
-		if not ok and Hub.alive then warn("[Arriva] " .. tostring(err)) end
+		if not ok and Hub.alive then Hub.lastWorkerError=tostring(err);warn("[Arriva] " .. tostring(err)) end
 	end)
 	Hub.threads[thread] = true
 	if method == "delay" then Hub.nativeTask.delay(delay, thread)
@@ -54,12 +59,43 @@ function Hub.connect(signal, callback)
 		Hub.threads[thread] = true
 		local ok, err = xpcall(function() callback(table.unpack(args, 1, args.n)) end, debug.traceback)
 		Hub.threads[thread] = nil
-		if not ok and Hub.alive then warn("[Arriva callback] " .. tostring(err)) end
+		if not ok and Hub.alive then Hub.lastCallbackError=tostring(err);warn("[Arriva callback] " .. tostring(err)) end
 	end)
 	Hub.connections[connection] = true
 	return connection
 end
 function Hub.cleanup(callback) table.insert(Hub.cleanups, callback) end
+-- Coalesce repeated roster UI changes without delaying protective decisions.
+Hub.pendingRefreshes={}
+function Hub.queueRefresh(key,callback)
+    if Hub.pendingRefreshes[key] then return end
+    Hub.pendingRefreshes[key]=true
+    task.delay(0.15,function()
+        Hub.pendingRefreshes[key]=nil
+        if Hub.alive then callback() end
+    end)
+end
+Hub.cleanup(function() table.clear(Hub.pendingRefreshes) end)
+-- Enumerate incrementally so initial protection scans do not build one giant array.
+function Hub.scanDescendants(root,visit,valid)
+    return task.spawn(function()
+        local queue={root};local first,last=1,1
+        while first<=last and Hub.alive and valid() do
+            local deadline=os.clock()+0.001
+            local count=0
+            repeat
+                local object=queue[first];queue[first]=nil;first+=1
+                if object and (object==root or object.Parent) then
+                    if object~=root then visit(object) end
+                    for _,child in ipairs(object:GetChildren()) do last+=1;queue[last]=child end
+                end
+                count+=1
+            until first>last or count>=128 or os.clock()>=deadline or not valid()
+            if first<=last then task.wait() end
+        end
+    end)
+end
+
 function Hub.stop()
 	if not Hub.alive then return end
 	if Hub.ready and Hub.storage and Hub.saveManager then Hub.persistSettings() end
@@ -75,6 +111,38 @@ function Hub.stop()
 	table.clear(Hub.connections); table.clear(Hub.threads)
 	if Hub.env.ArrivaCoreMaintenance == Hub.unload then Hub.env.ArrivaCoreMaintenance = nil end
 end
+-- Restore saved values first, then spread enabled-feature callbacks across frames.
+function Hub.queueSavedCallbacks(records,invoke)
+    Hub.restoreEpoch=(Hub.restoreEpoch or 0)+1
+    local ticket=Hub.restoreEpoch
+    local delayed={}
+    Hub.restoreProgress={total=0,started=0,done=false}
+    local progress=Hub.restoreProgress
+    local function run(record)
+        local control=record.control
+        if not Hub.alive or ticket~=Hub.restoreEpoch or control.revision~=record.revision then return end
+        Hub.lastRestoreControl=control.Id or "saved control"
+        invoke(control.Callback,record.value)
+    end
+    for _,record in ipairs(records) do
+        if record.control.Type=="Toggle" and record.value==true then table.insert(delayed,record)
+        else task.defer(function() run(record) end) end
+    end
+    progress.total=#delayed
+    task.spawn(function()
+        local setting=Hub.library and Hub.library.Options.StartupFeatureDelay
+        task.wait(math.clamp(tonumber(setting and setting.Value) or 3,0,10))
+        for _,record in ipairs(delayed) do
+            if not Hub.alive or ticket~=Hub.restoreEpoch then return end
+            task.spawn(function() run(record) end)
+            progress.started+=1
+            task.wait(0.1)
+        end
+        if ticket==Hub.restoreEpoch then progress.done=true end
+    end)
+end
+
+
 function Hub.fetch(url)
 	local ok, value = pcall(function()
 		local fn, err = loadstring(game:HttpGet(url))
@@ -223,10 +291,16 @@ Hub.friendCache = {}
 Hub.friendChecks = {}
 Hub.characterOwners = setmetatable({}, {__mode = "k"})
 Hub.playerNames = {}
+Hub.ownershipBindings = {}
 function Hub.trackPlayerOwnership(player)
-	Hub.playerNames[player.Name] = player
-	if player.Character then Hub.characterOwners[player.Character] = player end
-	Hub.connect(player.CharacterAdded, function(char) Hub.characterOwners[char] = player end)
+    if Hub.ownershipBindings[player] then return end
+    Hub.playerNames[player.Name]=player
+    if player.Character then Hub.characterOwners[player.Character]=player end
+    local previous=player.Character
+    Hub.ownershipBindings[player]=Hub.connect(player.CharacterAdded,function(char)
+        if previous then Hub.characterOwners[previous]=nil end
+        previous=char;Hub.characterOwners[char]=player
+    end)
 end
 for _, player in ipairs(Players:GetPlayers()) do Hub.trackPlayerOwnership(player) end
 Hub.whitelistFriends = true
@@ -285,6 +359,7 @@ function Hub.checkFriend(player)
 	Hub.friendChecks[userId] = true
 	task.spawn(function()
 		local ok, result = pcall(function() return LocalPlayer:IsFriendsWithAsync(userId) end)
+        if player.Parent~=Players then Hub.friendChecks[userId]=nil;return end
 		Hub.friendCache[userId] = {friend = ok and result == true, failed = not ok, expires = os.clock() + (ok and 60 or 15)}
 		Hub.friendChecks[userId] = nil
 		if Hub.reconcileProtection then Hub.reconcileProtection() end
@@ -292,7 +367,7 @@ function Hub.checkFriend(player)
 	end)
 end
 function Hub.isProtected(player)
-	if not player then return false end
+	if typeof(player) ~= "Instance" or not player:IsA("Player") then return false end
 	if player == LocalPlayer then return true end
 	if Hub.manualWhitelist[tostring(player.UserId)] or Hub.manualWhitelist["name:" .. player.Name:lower()] then return true end
 	if not Hub.whitelistFriends then return false end
@@ -306,7 +381,7 @@ function Hub.isProtected(player)
 	return state.friend
 end
 function Hub.canHarm(player)
-	return player ~= nil and player ~= LocalPlayer and player.Parent ~= nil and not Hub.isProtected(player)
+	return typeof(player) == "Instance" and player:IsA("Player") and player ~= LocalPlayer and player.Parent ~= nil and not Hub.isProtected(player)
 end
 function Hub.playerOf(instance)
 	if typeof(instance) ~= "Instance" then return nil end
@@ -337,12 +412,39 @@ function Hub.playerOf(instance)
 	if weld and weld.Part1 and not weld.Part1:IsDescendantOf(instance) then return Hub.playerOf(weld.Part1) end
 	return nil
 end
-function Hub.lookAt(startPosition, targetPosition)
-	local directionVector = (targetPosition - startPosition).Unit
-	local rightVector = directionVector:Cross((Vector3.new(0, 1, 0)))
-	local upVector = rightVector:Cross(directionVector)
-	return CFrame.fromMatrix(startPosition, rightVector, upVector)
+function Hub.finiteVector(value)
+    return typeof(value)=="Vector3" and value.X==value.X and value.Y==value.Y and value.Z==value.Z
+        and math.abs(value.X)<math.huge and math.abs(value.Y)<math.huge and math.abs(value.Z)<math.huge
 end
+function Hub.safeLookAt(startPosition,targetPosition,fallbackDirection)
+    if not Hub.finiteVector(startPosition) or not Hub.finiteVector(targetPosition) then return nil end
+    local direction=targetPosition-startPosition
+    local length=direction.Magnitude
+    if length==math.huge then return nil end
+    if length<0.000001 then
+        direction=Hub.finiteVector(fallbackDirection) and fallbackDirection or Vector3.new(0,0,-1)
+        length=direction.Magnitude
+        if length<0.000001 or length==math.huge then direction=Vector3.new(0,0,-1);length=1 end
+    end
+    direction=direction/length
+    local up=math.abs(direction.Y)>0.999 and Vector3.new(1,0,0) or Vector3.new(0,1,0)
+    return CFrame.lookAlong(startPosition,direction,up)
+end
+Hub.SafeLookAt=Hub.safeLookAt
+
+
+-- Keep the existing game-facing basis for ordinary directions. Only replace
+-- degenerate inputs; do not rewrite caller-supplied remote CFrames globally.
+function Hub.lookAt(startPosition,targetPosition)
+    if not Hub.finiteVector(startPosition) or not Hub.finiteVector(targetPosition) then return nil end
+    local delta=targetPosition-startPosition
+    if delta.Magnitude<0.000001 then return Hub.safeLookAt(startPosition,targetPosition) end
+    local direction=delta.Unit
+    local right=direction:Cross(Vector3.new(0,1,0))
+    if right.Magnitude<0.000001 then return Hub.safeLookAt(startPosition,targetPosition) end
+    return CFrame.fromMatrix(startPosition,right,right:Cross(direction))
+end
+Hub.LookAt=Hub.lookAt
 function Hub.canAffect(instance)
 	-- A drop remote can receive only a weld in our toy; inspect its attached character too.
 	if typeof(instance) == "Instance" and (instance:IsA("Weld") or instance:IsA("WeldConstraint")) then
@@ -380,10 +482,15 @@ Hub.cleanup(function() if Hub.safetySaveThread then Hub.saveSafety() end end)
 Hub.connect(Players.PlayerAdded, function(player)
 	Hub.trackPlayerOwnership(player)
 	if Hub.whitelistFriends then Hub.checkFriend(player) end
-	if Hub.refreshWhitelistUI then task.defer(Hub.refreshWhitelistUI) end
+	if Hub.refreshWhitelistUI then Hub.queueRefresh("whitelist",Hub.refreshWhitelistUI) end
 end)
-Hub.connect(Players.PlayerRemoving, function()
-	if Hub.refreshWhitelistUI then task.defer(Hub.refreshWhitelistUI) end
+Hub.connect(Players.PlayerRemoving,function(player)
+    local connection=Hub.ownershipBindings[player]
+    if connection then connection:Disconnect();Hub.connections[connection]=nil;Hub.ownershipBindings[player]=nil end
+    if Hub.playerNames[player.Name]==player then Hub.playerNames[player.Name]=nil end
+    if player.Character then Hub.characterOwners[player.Character]=nil end
+    Hub.friendCache[player.UserId]=nil
+    if Hub.refreshWhitelistUI then Hub.queueRefresh("whitelist",Hub.refreshWhitelistUI) end
 end)
 -- END SAFETY WHITELIST CORE
 
@@ -845,7 +952,7 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 				BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=3,CanvasSize=UDim2.new(),
 				AutomaticCanvasSize=Enum.AutomaticSize.Y,Visible=false})
 			make("UIListLayout",list,{Padding=UDim.new(0,3),SortOrder=Enum.SortOrder.LayoutOrder})
-			local handle = {Options=info.Options,CurrentOption=table.clone(info.CurrentOption or {}),open=false,connections={}}
+			local handle = {Options=info.Options,CurrentOption=table.clone(info.CurrentOption or {}),open=false,connections={},row=row,list=list}
 			local optionButtons={}
 			local function collapse()
 				handle.open=false;row.Size=UDim2.new(1,0,0,48);list.Visible=false;arrow.Rotation=0
@@ -864,33 +971,47 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 				for _,name in ipairs(value or {}) do if table.find(self.Options,name) then table.insert(self.CurrentOption,name) end end
 				render();emit(info.Callback,table.clone(self.CurrentOption))
 			end
-			function handle:Refresh(values)
-				local unchanged=self.built and #values==#self.Options
-				if unchanged then
-					for index,value in ipairs(values) do if value~=self.Options[index] then unchanged=false;break end end
-				end
-				if unchanged then render();return end
-				for _,connection in ipairs(self.connections) do connection:Disconnect();Hub.connections[connection]=nil end
-				table.clear(self.connections)
-				for _,object in ipairs(list:GetChildren()) do if object:IsA("TextButton") then object:Destroy() end end
-				self.Options=table.clone(values);table.clear(optionButtons)
-				self.built=true
-				local clear=button(list,"    Clear selection",{Size=UDim2.new(1,-4,0,30),TextColor3=colors.muted,TextXAlignment=Enum.TextXAlignment.Left,TextSize=14})
-				table.insert(self.connections,Hub.connect(clear.Activated,function() self:Set({});collapse() end))
-				for _,name in ipairs(self.Options) do
-					local option=button(list,"    " .. name,{Size=UDim2.new(1,-4,0,30),TextXAlignment=Enum.TextXAlignment.Left,TextSize=14})
-					optionButtons[name]=option
-					table.insert(self.connections,Hub.connect(option.Activated,function()
-						if info.MultipleOptions then
-							local choices=table.clone(self.CurrentOption)
-							local index=table.find(choices,name)
-							if index then table.remove(choices,index) else table.insert(choices,name) end
-							self:Set(choices)
-						else self:Set({name});collapse() end
-					end))
-				end
-				collapse();render()
-			end
+            function handle:Refresh(values)
+                local savedScroll=list.CanvasPosition
+                local unchanged=self.built and #values==#self.Options
+                if unchanged then for index,value in ipairs(values) do if value~=self.Options[index] then unchanged=false;break end end end
+                if unchanged then render();return end
+                self.optionConnections=self.optionConnections or {}
+                local wanted={};for _,name in ipairs(values) do wanted[name]=true end
+                for name,option in pairs(optionButtons) do
+                    if not wanted[name] then
+                        local c=self.optionConnections[name]
+                        if c then c:Disconnect();Hub.connections[c]=nil end
+                        self.optionConnections[name]=nil;optionButtons[name]=nil;option:Destroy()
+                    end
+                end
+                self.Options=table.clone(values);self.built=true
+                if not self.clearButton then
+                    self.clearButton=button(list,"    Clear selection",{Size=UDim2.new(1,-4,0,30),TextColor3=colors.muted,TextXAlignment=Enum.TextXAlignment.Left,TextSize=14,LayoutOrder=0})
+                    table.insert(self.connections,Hub.connect(self.clearButton.Activated,function() self:Set({});collapse() end))
+                end
+                for index,name in ipairs(self.Options) do
+                    local option=optionButtons[name]
+                    if not option then
+                        option=button(list,"    "..name,{Size=UDim2.new(1,-4,0,30),TextXAlignment=Enum.TextXAlignment.Left,TextSize=14})
+                        optionButtons[name]=option
+                        self.optionConnections[name]=Hub.connect(option.Activated,function()
+                            if info.MultipleOptions then
+                                local choices=table.clone(self.CurrentOption);local i=table.find(choices,name)
+                                if i then table.remove(choices,i) else table.insert(choices,name) end
+                                self:Set(choices)
+                            else self:Set({name});collapse() end
+                        end)
+                    end
+                    option.LayoutOrder=index
+                end
+                if self.open then
+                    local height=math.min((#self.Options+1)*33,180)
+                    list.Size=UDim2.new(1,-16,0,height);row.Size=UDim2.new(1,0,0,60+height)
+                else collapse() end
+                if savedScroll then list.CanvasPosition=savedScroll end
+                render()
+            end
 			handle:Refresh(handle.Options)
 			Hub.connect(row.Activated,function()
 				if handle.open then collapse();return end
@@ -987,7 +1108,7 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 				self.CurrentKeybind=tostring(value);key.Text=self.CurrentKeybind
 				if info.CallOnChange then emit(info.Callback,self.CurrentKeybind) end
 			end
-			Hub.connect(row.Activated,function() UI.capture=handle;key.Text="Press a key..." end)
+			Hub.connect(row.Activated,function() if UI.capture then UI.capture.label.Text=UI.capture.CurrentKeybind end;UI.capture=handle;Hub.keybindCaptureActive=true;key.Text="Press a key..." end)
 			table.insert(UI.keybinds,handle)
 			return handle
 		end
@@ -1160,11 +1281,11 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 			Hub.connect(input.InputBegan,function(event,processed)
 				if self.capture then
 					if event.KeyCode==Enum.KeyCode.Unknown then return end
-					local capture=self.capture;self.capture=nil
+					local capture=self.capture;self.capture=nil;Hub.keybindCaptureActive=false;Hub.keybindCaptureBlockUntil=os.clock()+0.15
 					if event.KeyCode==Enum.KeyCode.Escape then capture.label.Text=capture.CurrentKeybind else capture:Set(event.KeyCode.Name) end
 					return
 				end
-				if processed or input:GetFocusedTextBox() then return end
+				if processed or input:GetFocusedTextBox() or os.clock()<(Hub.keybindCaptureBlockUntil or 0) then return end
 				local matched=false
 				for _,handle in ipairs(self.keybinds) do
 					if event.KeyCode.Name==handle.CurrentKeybind then matched=true;emit(handle.info.Callback) end
@@ -1270,8 +1391,8 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 			make("UIScale",frame,{Name="NotificationScale",Scale=self.noticeScale or 1})
 			make("UISizeConstraint",frame,{MaxSize=Vector2.new(400,1000)})
 			round(frame,10);stroke(frame,colors.line,1.2)
-			local title = tostring(info.Title or "Arriva"):gsub(";",",")
-			local content = tostring(info.Content or ""):gsub(";",",")
+			local title = tostring(info.Title or "Arriva"):sub(1,180):gsub(";",",")
+			local content = tostring(info.Content or ""):sub(1,2048):gsub(";",",")
 			local category = string.lower(title .. " " .. content)
 			local accent = Color3.fromRGB(106,177,255)
 			local iconName = "settings"
@@ -1398,6 +1519,7 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 			Violet={ {23,18,32},{31,25,43},{40,32,55},{75,59,96},{246,239,255},{192,177,208},{104,70,150},{181,137,244},{236,224,250} },
 			Forest={ {16,25,22},{22,34,29},{29,43,36},{53,78,65},{237,250,241},{173,198,181},{43,106,76},{109,205,151},{219,241,225} },
 		}
+		Hub.creativeUIPalette=colors
 		function UI:SetTheme(name)
 			if name=="Reference Dark" then name="Default" end
 			local palette=palettes[name]
@@ -1418,7 +1540,7 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 				colors[key]=nextColor
 			end
 			-- Only traverse UI when the theme changes, never every frame.
-			for _,gui in ipairs({self.gui,self.metricsGui,self.noticeGui}) do
+			for _,gui in ipairs({self.gui,self.metricsGui,self.noticeGui,Hub.touchActionsGui}) do
 				for _,object in ipairs(gui:GetDescendants()) do
 					local properties={}
 					if object:IsA("GuiObject") then table.insert(properties,"BackgroundColor3") end
@@ -1457,7 +1579,7 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 		for key, item in pairs(value) do result[key] = copy(item) end
 		return result
 	end
-	local function notifyError(err) warn("[Arriva Rayfield] " .. tostring(err)) end
+	local function notifyError(err) Hub.lastUIError=tostring(err);warn("[Arriva Rayfield] " .. tostring(err)) end
 	local function invoke(callback, value)
 		if callback then local ok, err = pcall(callback, value); if not ok then notifyError(err) end end
 	end
@@ -1478,7 +1600,7 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 	end
 	local function register(id, kind, info)
 		assert(not Library.controls[id], "Duplicate UI ID: " .. id)
-		local control = {Type = kind, Value = info.Default, Multi = info.Multi or false, Callback = info.Callback,
+		local control = {Id = id, Type = kind, Value = info.Default, Multi = info.Multi or false, Callback = info.Callback,
 			Values = info.Values or {}, NoUI = info.NoUI, Mode = "Toggle"}
 		Library.controls[id] = control
 		if kind == "Toggle" then Library.Toggles[id] = control else Library.Options[id] = control end
@@ -1572,7 +1694,7 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 			end)
 			self.busy = false
 			if not ok then notifyError(err) end
-			self:commit(value)
+			if Hub.canonical(value)~=Hub.canonical(self.Value) then self:commit(value) end
 		end
 		control.Value = control:normalize(info.Default)
 		control.handle = self.tab:CreateDropdown({Name = info.Text or id, Options = copy(control.Values),
@@ -1595,6 +1717,7 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 	function Group:AddKeyPicker(id, info)
 		if self.ensureSection then self:ensureSection() end
 		local control = register(id, "KeyPicker", info)
+        control.Callback = nil -- Settings changes must not execute the bound action.
 		function control:normalize(value)
 			if type(value) == "table" then value = value[1] end
 			return tostring(value or info.Default)
@@ -1602,7 +1725,7 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 		control.Value = info.Default
 		function control:GetState() return self.Toggled == true end
 		control.handle = self.tab:CreateKeybind({Name = info.Text or id, CurrentKeybind = info.Default,
-			HoldToInteract = false, CallOnChange = false,
+			HoldToInteract = false, CallOnChange = true,
 			Callback = function(value)
 				if type(value) == "string" then
 					if not control.busy then control:commit(value) end
@@ -1704,6 +1827,8 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 			Hub.loadedSafety=true
 		end
 		local errors={}
+        local legacyDetailed=false
+        for _,record in ipairs(data.objects) do if type(record)=="table" and record.idx=="DetailedESPEnabled" and record.value==true then legacyDetailed=true end end
 		for _,record in ipairs(data.objects) do
 			if type(record)=="table" then
 				local control=Library.controls[record.idx]
@@ -1715,6 +1840,7 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 				end
 			end
 		end
+		if legacyDetailed and Library.controls.NicknameESP then Library.controls.NicknameESP:SetValue(true) end
 		if Hub.refreshWhitelistUI then pcall(Hub.refreshWhitelistUI) end
 		if #errors>0 then return false,"Some settings could not load: " .. table.concat(errors,"; ") end
 		return true
@@ -1747,14 +1873,7 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 						Hub.configLoaded=true;Hub.lastLoadPath=file
 						Hub.lastSettings=Hub.captureSettings()
 						-- Starting a saved feature must never hold the settings loader open.
-						for _,record in ipairs(pending.ordered) do
-							task.defer(function()
-								local control=record.control
-								if Hub.alive and control.revision==record.revision then
-									invoke(control.Callback,record.value)
-								end
-							end)
-						end
+						Hub.queueSavedCallbacks(pending.ordered,invoke)
 						return true
 					end
 					table.insert(failures,file .. ": " .. tostring(called and reason or loaded))
@@ -1830,6 +1949,7 @@ local Tabs = {
 	Customization = Window:AddTab("Menu Customization", "palette"),
 	Updates = Window:AddTab("Update Log", "history"),
 	Notifications = Window:AddTab("Notifications", "bell"),
+	KeyBinds   = Window:AddTab("KeyBinds", "keyboard"),
 	Target = Window:AddTab("Loop Players", "crosshair"),
 	Aura = Window:AddTab("Auras", "align-vertical-space-around"),
 	Fun = Window:AddTab("Fun", "heart"),
@@ -1838,6 +1958,65 @@ local Tabs = {
 	Misc = Window:AddTab("Misc", "box"),
 	["UI Settings"] = Window:AddTab("UI Settings", "settings"),
 }
+
+-- Central shortcut settings. Existing option IDs remain compatible with saved settings.
+Hub.keybindDefinitions = {
+    {id = "MenuKeybind", label = "Toggle menu", default = "M"},
+    {id = "BlobSeatKey", label = "Sit in your Blobman", default = "B"},
+    {id = "BlobFlyKey", label = "Toggle Blob Fly", default = "R"},
+    {id = "ClickTeleportKey", label = "Click teleport", default = "Z"},
+    {id = "FreeMouseKey", label = "Toggle free mouse", default = "F"},
+    {id = "AnchorObjectKey", label = "Anchor held object", default = "G"},
+    {id = "CreativeQuickSpawnKey", label = "Quick-spawn selected toy", default = "P"},
+    {id = "MissileThrowKey", label = "Throw Bomb", default = "V"},
+    {id = "ExplodeBombKey", label = "Explode Bomb", default = "J"},
+    {id = "ExplodeFireworkKey", label = "Explode Firework", default = "N"},
+    {id = "EmergencyUnloadKey", label = "Unload hub", default = "End"},
+}
+function Hub.matchesKeybind(id, input, fallback)
+    if Hub.keybindCaptureActive or os.clock() < (Hub.keybindCaptureBlockUntil or 0) then return false end
+    local option = Options[id]
+    local value = option and option.Value or fallback
+    return input and input.KeyCode and input.KeyCode.Name == value
+end
+function Hub.keybindConflictReport()
+    local used, conflicts = {}, {}
+    for _, definition in ipairs(Hub.keybindDefinitions) do
+        local option = Options[definition.id]
+        local key = option and option.Value or definition.default
+        if key and key ~= "None" and key ~= "Unknown" then
+            if used[key] then table.insert(conflicts, key .. ": " .. used[key] .. " / " .. definition.label)
+            else used[key] = definition.label end
+        end
+    end
+    return conflicts
+end
+Hub.keybindGroups = {
+    actions = Tabs.KeyBinds:AddLeftGroupbox("Action shortcuts"),
+    interface = Tabs.KeyBinds:AddRightGroupbox("Menu & emergency"),
+    missiles = Tabs.KeyBinds:AddRightGroupbox("Missile throw"),
+}
+for _, definition in ipairs(Hub.keybindDefinitions) do
+    if definition.id == "BlobSeatKey" or definition.id == "BlobFlyKey" or definition.id == "ClickTeleportKey" or definition.id == "FreeMouseKey" then
+        Hub.keybindGroups.actions:AddLabel(definition.label):AddKeyPicker(definition.id,
+            {Default = definition.default, Text = definition.label})
+    elseif definition.id == "EmergencyUnloadKey" then
+        Hub.keybindGroups.interface:AddLabel(definition.label):AddKeyPicker(definition.id,
+            {Default = definition.default, Text = definition.label})
+    end
+end
+Hub.keybindGroups.interface:AddButton({Text = "Check shortcut conflicts", Func = function()
+    local conflicts = Hub.keybindConflictReport()
+    Library:Notify({Title = "KeyBinds", Description = #conflicts == 0 and "No duplicate hub shortcuts." or table.concat(conflicts, "\n"), Time = 6})
+end})
+Hub.keybindGroups.interface:AddButton({Text = "Reset hub shortcuts", Func = function()
+    for _, definition in ipairs(Hub.keybindDefinitions) do
+        local option = Options[definition.id]
+        if option then option:SetValue(definition.default) end
+    end
+end})
+Hub.keybindGroups.interface:AddLabel("Click a shortcut and press a key to change it; Escape cancels. Right Shift remains a menu fallback. Action keys pause while typing or assigning a shortcut. Click teleport and quick spawn also need their feature toggles enabled.")
+-- End central shortcut settings.
 
 --// Core Variables
 local Player = LocalPlayer -- Consistent naming
@@ -1922,42 +2101,110 @@ local function sendHubLoadedMessage()
 	end
 end
 
--- Paint Parts Management
-local paintPartsBackup = {}
-local paintConnections = {}
-local function hidePaint(obj)
-	if not obj:IsA("BasePart") or obj.Name ~= "PaintPlayerPart" then return end
-	if not paintPartsBackup[obj] then
-		paintPartsBackup[obj] = {Transparency = obj.Transparency, CanTouch = obj.CanTouch, CanQuery = obj.CanQuery}
+-- Paint suppression owns its backups and never restores unrelated Hub properties.
+local deleteAllPaintParts,restorePaintParts,watchNewPaintParts,disconnectWatchers,setTouchQuery=(function()
+	local active=false
+    local scanEpoch=0
+	local saved,guards,connections={},{},{}
+	local worldListeners={}
+	local characterSaved={}
+	local function disconnect(connection)
+		connection:Disconnect();Hub.connections[connection]=nil
 	end
-	obj.Transparency = 1; obj.CanTouch = false; obj.CanQuery = false
-end
-local function deleteAllPaintParts()
-	for _, obj in ipairs(Workspace:GetDescendants()) do hidePaint(obj) end
-end
-local function restorePaintParts()
-	for obj, props in pairs(paintPartsBackup) do
-		pcall(function() for property, value in pairs(props) do obj[property] = value end end)
+	local function restore(object,properties)
+		if not object.Parent then return end
+		for key,value in pairs(properties) do pcall(function() object[key]=value end) end
 	end
-	table.clear(paintPartsBackup)
-end
-local function watchNewPaintParts()
-	for _, connection in ipairs(paintConnections) do connection:Disconnect() end
-	table.clear(paintConnections)
-	table.insert(paintConnections, Hub.connect(Workspace.DescendantAdded, hidePaint))
-end
-local function disconnectWatchers()
-	for _, connection in ipairs(paintConnections) do connection:Disconnect() end
-	table.clear(paintConnections)
-end
+	local function underPaint(object)
+		local current=object
+		while current and current~=Workspace do
+			if current:IsA("BasePart") and current.Name=="PaintPlayerPart" then return true end
+			current=current.Parent
+		end
+		return false
+	end
+	local function suppress(object)
+		if not active or not underPaint(object) then return end
+		local properties
+		if object:IsA("BasePart") then properties={Transparency=1,CanTouch=false,CanQuery=false,CanCollide=false}
+		elseif object:IsA("Decal") or object:IsA("Texture") then properties={Transparency=1}
+		elseif object:IsA("ParticleEmitter") or object:IsA("Trail") or object:IsA("Beam")
+			or object:IsA("Fire") or object:IsA("Smoke") or object:IsA("Sparkles") then properties={Enabled=false}
+		end
+		if not properties then return end
+		if not saved[object] then saved[object]={};connections[object]={} end
+		for key,value in pairs(properties) do
+			if saved[object][key]==nil then
+				saved[object][key]=object[key]
+				table.insert(connections[object],Hub.connect(object:GetPropertyChangedSignal(key),function()
+					if active and not guards[object] and underPaint(object) and object[key]~=value then
+						guards[object]=true;object[key]=value;guards[object]=nil
+					end
+				end))
+			end
+			guards[object]=true;object[key]=value;guards[object]=nil
+		end
+	end
+	local function characterPart(object)
+		local char=Player.Character
+		if not active or not char or not object:IsA("BasePart") or not object:IsDescendantOf(char) then return end
+		if not characterSaved[object] then characterSaved[object]={CanTouch=object.CanTouch,CanQuery=object.CanQuery} end
+		object.CanTouch=false;object.CanQuery=false
+	end
+	local function forget(object)
+		local list=connections[object]
+		if list then for _,connection in ipairs(list) do disconnect(connection) end end
+		connections[object]=nil
+		if saved[object] then restore(object,saved[object]);saved[object]=nil end
+		if characterSaved[object] then restore(object,characterSaved[object]);characterSaved[object]=nil end
+	end
+	local function restoreAll()
+		active=false;scanEpoch+=1
+		local objects={}
+		for object in pairs(saved) do table.insert(objects,object) end
+		for _,object in ipairs(objects) do forget(object) end
+		for object,properties in pairs(characterSaved) do restore(object,properties) end
+		table.clear(characterSaved)
+	end
+	local function scan()
+		active=true;scanEpoch+=1;local ticket=scanEpoch
+		Hub.scanDescendants(Workspace,suppress,function() return active and scanEpoch==ticket end)
+	end
+	local function disconnectAll()
+		active=false
+		for _,connection in ipairs(worldListeners) do disconnect(connection) end
+		table.clear(worldListeners)
+		restoreAll()
+	end
+	local function watch()
+		for _,connection in ipairs(worldListeners) do disconnect(connection) end
+		table.clear(worldListeners)
+		active=true
+		table.insert(worldListeners,Hub.connect(Workspace.DescendantAdded,function(object)
+			suppress(object);characterPart(object)
+			if object:IsA("BasePart") and object.Name=="PaintPlayerPart" then
+				for _,child in ipairs(object:GetDescendants()) do suppress(child) end
+			end
+		end))
+		table.insert(worldListeners,Hub.connect(Workspace.DescendantRemoving,function(object)
+            if not saved[object] and not characterSaved[object] then return end
+            task.defer(function()
+				if not object:IsDescendantOf(Workspace) or not underPaint(object) then forget(object) end
+			end)
+		end))
+	end
+	local function touchQuery(state)
+		if state then
+			for object,properties in pairs(characterSaved) do restore(object,properties) end
+			table.clear(characterSaved)
+		else
+			local char=Player.Character
+			if char then for _,object in ipairs(char:GetDescendants()) do characterPart(object) end end
+		end
+	end
+	return scan,restoreAll,watch,disconnectAll,touchQuery
+end)()
 
-local function setTouchQuery(state)
-	local char = Workspace:FindFirstChild(Player.Name)
-	if not char then return end
-	for _, v in ipairs(char:GetChildren()) do
-		if v:IsA("Part") or v:IsA("BasePart") then if not state then Hub.backup(v, {"CanTouch", "CanQuery"}); v.CanTouch = false; v.CanQuery = false else Hub.restore(v) end end
-	end
-end
 
 -- Anti-Gucci Systems
 Hub.gucciAutoDelete=true
@@ -2187,13 +2434,13 @@ local function stopAntiGucci()
 	if Hub.updateGucciStatus then Hub.updateGucciStatus() end
 	Hub.blobGeneration = (Hub.blobGeneration or 0) + 1
 	if Hub.blobJump then Hub.blobJump:Disconnect(); Hub.blobJump = nil end
-	if antiGucciConnection then 
-		antiGucciConnection:Disconnect() 
-		antiGucciConnection = nil 
+	if antiGucciConnection then
+		antiGucciConnection:Disconnect()
+		antiGucciConnection = nil
 	end
 	local blobFolder = Workspace:FindFirstChild(Player.Name.."SpawnedInToys")
-	if blobFolder and blobFolder:FindFirstChild("CreatureBlobman") then 
-		blobFolder.CreatureBlobman:Destroy() 
+	if blobFolder and blobFolder:FindFirstChild("CreatureBlobman") then
+		blobFolder.CreatureBlobman:Destroy()
 	end
 end
 
@@ -2263,9 +2510,9 @@ end
 local function stopAntiGucciTrain()
 	Hub.trainGeneration = (Hub.trainGeneration or 0) + 1
 	if Hub.trainJump then Hub.trainJump:Disconnect(); Hub.trainJump = nil end
-	if antiGucciConnectionTrain then 
-		antiGucciConnectionTrain:Disconnect() 
-		antiGucciConnectionTrain = nil 
+	if antiGucciConnectionTrain then
+		antiGucciConnectionTrain:Disconnect()
+		antiGucciConnectionTrain = nil
 	end
 end
 
@@ -2589,27 +2836,28 @@ local antiBlob1T=false
 local antiBlobWatcher
 local function antiBlob1F()
 	antiBlob1T=true
+    Hub.blobScanEpoch=(Hub.blobScanEpoch or 0)+1;local ticket=Hub.blobScanEpoch
 
 	if antiBlob1T then
-		for _, Descendant in pairs(workspace:GetDescendants()) do
-			if Descendant.Name == "CreatureBlobman" and Descendant.Parent ~= Workspace:FindFirstChild(Player.Name .. "SpawnedInToys") then
-				anti(Descendant)
-			end
-		end
 
-		if antiBlobWatcher then antiBlobWatcher:Disconnect() end
-		antiBlobWatcher = Hub.connect(workspace.DescendantAdded, function(Descendant)
-			if antiBlob1T and Descendant.Name == "CreatureBlobman" and Descendant.Parent ~= Workspace:FindFirstChild(Player.Name .. "SpawnedInToys") then
-				task.wait(0.1)
-				if not antiBlob1T then return end
-				anti(Descendant)
-			end
-		end)
-	end
+
+		if antiBlobWatcher then antiBlobWatcher:Disconnect();Hub.connections[antiBlobWatcher]=nil end
+        antiBlobWatcher=Hub.connect(workspace.DescendantAdded,function(object)
+            if not antiBlob1T then return end
+            if object.Name~="CreatureBlobman" and object.Name~="LeftDetector" and object.Name~="RightDetector" and not object:IsA("Constraint") then return end
+            local model=object
+            while model and model~=Workspace and model.Name~="CreatureBlobman" do model=model.Parent end
+            if not model or model==Workspace or model.Parent==Workspace:FindFirstChild(Player.Name.."SpawnedInToys") then return end
+            anti(model)
+        end)
+        Hub.scanDescendants(Workspace,function(object)
+            if object.Name=="CreatureBlobman" and object.Parent~=Workspace:FindFirstChild(Player.Name.."SpawnedInToys") then anti(object) end
+        end,function() return antiBlob1T and Hub.blobScanEpoch==ticket end)
+    end
 end
 
 DefenseGroup:AddToggle("AntiBlobmanToggle", {
-	Text="Anti Blobman", 
+	Text="Anti Blobman",
 	Default=false,
 	Callback=function(on)
 		Hub.requestSave()
@@ -2644,7 +2892,7 @@ Hub.cleanup(function()
 end)
 
 DefenseGroup:AddToggle("AntiExplosionToggle", {
-	Text="Anti Explosion", 
+	Text="Anti Explosion",
 	Default=false,
 	Callback=function(on)
 		Hub.requestSave()
@@ -2828,117 +3076,168 @@ do
 
 end
 
--- Anti-Sticky: local touch suppression and self-linked joint suppression.
--- Own SpawnedInToys descendants remain untouched. Server-side attachment is not guaranteed blocked.
+-- Optional self-only recovery. No target, ownership or grab remotes.
 do
-	local enabled = false
-	local parts, joints, saved = {}, {}, {}
-	local listeners = {}
-
-	local function own(part)
-		local folder = workspace:FindFirstChild(Player.Name .. "SpawnedInToys")
-		return folder and part:IsDescendantOf(folder) or false
-	end
-	local function foreignSticky(part)
-		return part and part:IsA("BasePart") and part.Name == "StickyPart"
-			and part:IsDescendantOf(workspace) and not own(part)
-	end
-	local function selfPart(part)
-		local char = Player.Character
-		return part and char and part:IsDescendantOf(char) or false
-	end
-	local function restore(object)
-		local properties = saved[object]
-		if not properties then return end
-		for property, value in pairs(properties) do
-			pcall(function() object[property] = value end)
-		end
-		saved[object] = nil
-	end
-	local function suppress(object, property)
-		local properties = saved[object]
-		if not properties then properties = {}; saved[object] = properties end
-		if properties[property] == nil then properties[property] = object[property] end
-		if object[property] ~= false then object[property] = false end
-	end
-	local function inspect(object)
-		if object:IsA("BasePart") and object.Name == "StickyPart" then
-			parts[object] = true
-		elseif object:IsA("JointInstance") or object:IsA("WeldConstraint") then
-			local a, b = object.Part0, object.Part1
-			-- Stable map/body joints are not part of sticky protection.
-			if (a and a.Name == "StickyPart") or (b and b.Name == "StickyPart") then
-				joints[object] = math.huge
-			elseif not a or not b then
-				joints[object] = os.clock() + 5 -- Allow endpoints to replicate.
-			end
-		end
-	end
-	local function reconcile()
-		for part in pairs(parts) do
-			if not part:IsDescendantOf(workspace) then
-				restore(part); parts[part] = nil
-			elseif foreignSticky(part) then suppress(part, "CanTouch")
-			else restore(part) end
-		end
-		for joint, pendingUntil in pairs(joints) do
-			if not joint:IsDescendantOf(workspace) then
-				restore(joint); joints[joint] = nil
-			else
-				local a, b = joint.Part0, joint.Part1
-				if (foreignSticky(a) and selfPart(b)) or (foreignSticky(b) and selfPart(a)) then
-					suppress(joint, "Enabled")
-				else
-					restore(joint)
-					local stickyEndpoint = (a and a.Name == "StickyPart") or (b and b.Name == "StickyPart")
-					if not stickyEndpoint and ((a and b) or os.clock() >= pendingUntil) then
-						joints[joint] = nil
-					elseif stickyEndpoint then
-						joints[joint] = math.huge
-					end
-				end
-			end
-		end
-	end
-	local function stop()
-		enabled = false
-		for _, listener in ipairs(listeners) do
-			listener:Disconnect()
-			if Hub.connections then Hub.connections[listener] = nil end
-		end
-		table.clear(listeners)
-		for object in pairs(saved) do restore(object) end
-		table.clear(parts); table.clear(joints)
-	end
-	Hub.cleanup(stop)
-	DefenseGroup:AddToggle("AntiStickyToggle", {
-		Text = "Anti Sticky", Default = false,
-		Callback = function(on)
-			stop()
-			enabled = on
-			Hub.requestSave()
-			if not on then return end
-			-- Keep StickyPartsTouchDetection running so your own toys can still work.
-			table.insert(listeners, Hub.connect(workspace.DescendantAdded, function(object)
-				if not enabled then return end
-				inspect(object)
-				if object:IsA("BasePart") and foreignSticky(object) then suppress(object, "CanTouch") end
-			end))
-			for _, object in ipairs(workspace:GetDescendants()) do inspect(object) end
-			reconcile()
-			local elapsed = 0
-			table.insert(listeners, Hub.connect(RunService.Heartbeat, function(dt)
-				if not enabled then return end
-				elapsed += dt
-				if elapsed < 0.2 then return end
-				elapsed = 0
-				reconcile()
-			end))
-		end,
-	})
+(function()
+    local group=DefenseGroup
+    local enabled=false
+    local linearLimit,angularLimit=350,100
+    local lastCharacter,lastGround,lastSample,lastAction=nil,nil,0,-math.huge
+    local recoveries=0
+    local function finite(value)
+        return type(value)=="number" and value==value and math.abs(value)<math.huge
+    end
+    local function vectorOK(value) return finite(value.X) and finite(value.Y) and finite(value.Z) end
+    local function sample()
+        if not enabled then return end
+        local char=Player.Character
+        if char~=lastCharacter then lastCharacter=char;lastGround=nil end
+        local root=char and char:FindFirstChild("HumanoidRootPart")
+        local hum=char and char:FindFirstChildOfClass("Humanoid")
+        if not root or not hum or hum.Health<=0 or hum.SeatPart or Hub.safeZoneLoopActive then return end
+        local velocity,rotation=root.AssemblyLinearVelocity,root.AssemblyAngularVelocity
+        local unsafe=not vectorOK(velocity) or not vectorOK(rotation)
+            or velocity.Magnitude>linearLimit or rotation.Magnitude>angularLimit
+        local now=os.clock()
+        if unsafe then
+            root.AssemblyLinearVelocity=Vector3.zero;root.AssemblyAngularVelocity=Vector3.zero
+            if lastGround and now-lastAction>=1 then
+                root.CFrame=lastGround;lastAction=now;recoveries+=1
+            end
+            return
+        end
+        if now-lastSample<0.25 or not vectorOK(root.Position) then return end
+        lastSample=now
+        if root.Position.Y<=Workspace.FallenPartsDestroyHeight+12 then return end
+        local params=RaycastParams.new();params.FilterType=Enum.RaycastFilterType.Exclude
+        params.FilterDescendantsInstances={char};params.RespectCanCollide=true;params.IgnoreWater=true
+        local hit=Workspace:Raycast(root.Position,Vector3.new(0,-8,0),params)
+        if hit and hit.Normal.Y>=0.5 and hit.Instance:IsA("BasePart") and hit.Instance.Anchored
+            and not Hub.playerOf(hit.Instance) then lastGround=root.CFrame end
+    end
+    Hub.sampleMotionProtection=sample
+    group:AddToggle("LocalMotionProtection",{Text="Extreme velocity recovery",Default=false,Callback=function(on)
+        enabled=on;lastCharacter=nil;lastGround=nil;lastSample=0
+    end})
+    group:AddSlider("LocalMotionLinearLimit",{Text="Recovery speed limit",Default=350,Min=100,Max=2000,Rounding=0,Callback=function(value) linearLimit=value end})
+    group:AddSlider("LocalMotionAngularLimit",{Text="Recovery spin limit",Default=100,Min=20,Max=500,Rounding=0,Callback=function(value) angularLimit=value end})
+    group:AddLabel("Stops extreme motion on your character and returns to its last grounded position when available. Leave off for intentional high-speed movement. Pauses while seated or using the safe-zone loop.")
+    local conn
+    conn=Hub.connect(RunService.Heartbeat,function() sample() end)
+    group:AddButton("Motion recovery status",function() notify("Motion protection",string.format("Ground recovery used %d times this session.",recoveries),4) end)
+    Hub.cleanup(function() enabled=false;lastGround=nil;Hub.sampleMotionProtection=nil end)
+end)()
 end
 
+do
+(function()
+    local enabled=false
+    local conn
+    local function disconnect() if conn then conn:Disconnect();Hub.connections[conn]=nil;conn=nil end end
+    local function bind(char)
+        disconnect()
+        if not enabled or not char then return end
+        local function release(active,seat)
+            if not enabled or not active or Player.Character~=char then return end
+            -- Preserve the hub's deliberate Blobman seating sequence.
+            local cursor=seat
+            while cursor and cursor~=Workspace do
+                if cursor.Name=="CreatureBlobman" and cursor.Parent==Workspace:FindFirstChild(Player.Name.."SpawnedInToys") then return end
+                cursor=cursor.Parent
+            end
+            local hum=char:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health>0 then hum.Jump=true end
+        end
+        local hum=char:FindFirstChildOfClass("Humanoid")
+        if hum then conn=Hub.connect(hum.Seated,release);release(hum.SeatPart~=nil,hum.SeatPart) end
+    end
+    DefenseGroup:AddToggle("LocalUnwantedSeatProtection",{Text="Jump out of unwanted seats",Default=false,Callback=function(on) enabled=on;bind(Player.Character) end})
+    DefenseGroup:AddLabel("Jumps out of ordinary seats locally. Your own Blobman seating is allowed so Gucci can run.")
+    Hub.connect(Player.CharacterAdded,function(char)
+        task.defer(function()
+            if not enabled then return end
+            char:WaitForChild("Humanoid",5)
+            if Hub.alive and Player.Character==char then bind(char) end
+        end)
+    end)
+    Hub.cleanup(function() enabled=false;disconnect() end)
+end)()
+end
 
+do
+(function()
+    local enabled=false
+    local history={};local rosterEvent="none";local rosterTime=-math.huge
+    local group=Tabs.AntiLag:AddRightGroupbox("Frame Spike Diagnostics")
+    local function roster(kind,person) rosterEvent=kind.." "..person.Name;rosterTime=os.clock() end
+    Hub.connect(Players.PlayerAdded,function(person) roster("join",person) end)
+    Hub.connect(Players.PlayerRemoving,function(person) roster("leave",person) end)
+    local connection
+    group:AddToggle("FrameSpikeDiagnostics",{Text="Record frame spikes",Default=false,Callback=function(on)
+        enabled=on
+        if connection then connection:Disconnect();Hub.connections[connection]=nil;connection=nil end
+        if on then connection=Hub.connect(RunService.Heartbeat,function(dt)
+            if dt<0.1 then return end
+            table.insert(history,{ms=math.floor(dt*1000+0.5),near=os.clock()-rosterTime<3 and rosterEvent or "no recent roster change"})
+            if #history>12 then table.remove(history,1) end
+        end) end
+    end})
+    group:AddButton("Show frame spike report",function()
+        local lines={};for _,entry in ipairs(history) do table.insert(lines,string.format("%d ms, %s",entry.ms,entry.near)) end
+        print("[Arriva frame spikes]\n"..(#lines>0 and table.concat(lines,"\n") or "No frame spikes recorded."))
+        notify("Frame diagnostics",string.format("%d recent spikes recorded. Details printed to F9. Timing correlation does not identify the cause.",#history),5)
+    end)
+    Hub.cleanup(function() table.clear(history) end)
+end)()
+end
+
+-- Anti-Sticky: disable the local touch detector, restoring its original state.
+do
+	(function()
+		local enabled=false
+		local saved,listeners,folders={},{},{}
+		local status=DefenseGroup:AddLabel("Anti Sticky is off.")
+		local function connect(event,callback)
+			local connection=Hub.connect(event,callback)
+			table.insert(listeners,connection)
+		end
+		local function inspect(object)
+			if not enabled or not object:IsA("LocalScript") or object.Name~="StickyPartsTouchDetection" then return end
+			if saved[object]~=nil then return end
+			saved[object]=object.Disabled
+			object.Disabled=true
+			connect(object:GetPropertyChangedSignal("Disabled"),function()
+				if enabled and object.Parent and not object.Disabled then object.Disabled=true end
+			end)
+			status:SetText("StickyPartsTouchDetection disabled locally. This also affects your own sticky toys.")
+		end
+		local function watchFolder(folder)
+			if not enabled or folder.Name~="PlayerScripts" or folders[folder] then return end
+			folders[folder]=true
+			connect(folder.DescendantAdded,inspect)
+			for _,object in ipairs(folder:GetDescendants()) do inspect(object) end
+		end
+		local function stop()
+			enabled=false
+			for _,connection in ipairs(listeners) do connection:Disconnect();Hub.connections[connection]=nil end
+			table.clear(listeners);table.clear(folders)
+			for object,disabled in pairs(saved) do
+				pcall(function() if object.Parent then object.Disabled=disabled end end)
+			end
+			table.clear(saved)
+			status:SetText("Anti Sticky is off.")
+		end
+		DefenseGroup:AddToggle("AntiStickyToggle",{Text="Anti Sticky",Default=false,Callback=function(on)
+			stop();enabled=on;Hub.requestSave()
+			if not on then return end
+			status:SetText("Waiting for PlayerScripts.StickyPartsTouchDetection...")
+			connect(Player.ChildAdded,watchFolder)
+			local folder=Player:FindFirstChild("PlayerScripts")
+			if folder then watchFolder(folder) end
+		end})
+		Hub.cleanup(stop)
+	end)()
+end
 
 
 local function isFromLocalPlayer(inst)
@@ -3248,14 +3547,14 @@ DefenseExtra:AddToggle("PaintDeleteToggle", {
 	Text = "Anti Paint",
 	Default = false,
 	Callback = function(state)
-		if state then 
-			deleteAllPaintParts() 
-			watchNewPaintParts() 
+		if state then
+			deleteAllPaintParts()
+			watchNewPaintParts()
 			setTouchQuery(false)
-		else 
-			restorePaintParts() 
-			disconnectWatchers() 
-			setTouchQuery(true) 
+		else
+			restorePaintParts()
+			disconnectWatchers()
+			setTouchQuery(true)
 		end
 	end
 })
@@ -3336,7 +3635,7 @@ DefenseExtra:AddToggle("AutoGucciTrainToggle", {
 					local trainExists = trainFolder and trainFolder:FindFirstChild("Train")
 
 					if not trainExists then
-						stopAntiGucciTrain() 
+						stopAntiGucciTrain()
 						notify("System", "Train lost", 3)
 
 						local retries = 0
@@ -3351,7 +3650,7 @@ DefenseExtra:AddToggle("AutoGucciTrainToggle", {
 							notify("System", "Train restored.", 3)
 						end
 					end
-					task.wait(0.5) 
+					task.wait(0.5)
 				end
 			end)
 		else
@@ -3407,7 +3706,7 @@ DefenseExtra:AddToggle("AntiInputLag", {
 						end)
 
 						local startWait = tick()
-						repeat 
+						repeat
 							task.wait(0.1)
 							toysFolder = Workspace:FindFirstChild(plr.Name.."SpawnedInToys")
 							burger = toysFolder and toysFolder:FindFirstChild(ToyName)
@@ -3600,7 +3899,13 @@ do
 					end)
 					if ticket ~= generation then return end
 					spawnPending, spawnJob = false, nil
-					if not ok then report("Spawn failed: " .. tostring(err)) end
+					if not ok then
+                        if tostring(err):find("OwnedToys",1,true) then
+                            nextSpawn=os.clock()+60
+                            warn("[Shuriken] Server toy data error: " .. tostring(err))
+                            report("The game could not read your owned-toy data. Spawn retries paused for 60 seconds. Try the normal toy menu, or rejoin if it also fails.")
+                        else report("Spawn failed: " .. tostring(err)) end
+                    end
 				end)
 				return
 			else
@@ -3717,8 +4022,8 @@ local function getPlayerList()
 end
 
 local function getPlayerFromSelection(selection)
-	if not selection then return nil end
-	local username = selection:match("%((.-)%)")
+	if type(selection) ~= "string" then return nil end
+	local username = selection:match("%(([^()]*)%)$")
 	if username then
 		return Players:FindFirstChild(username)
 	end
@@ -3727,7 +4032,7 @@ end
 
 -- Auto Attacker
 local AutoAttacker = false
-local AttackMode = nil
+local AttackMode = "Kill"
 local headConnection
 DefenseExtra:AddToggle("AutoAttacker", {
 	Text = "Auto Attacker",
@@ -3756,12 +4061,7 @@ function CheckNetworkOwnerShipOnPlayer(potentialPlayer, condition)
 	end
 end
 
-function lookAt(startPosition, targetPosition)
-	local directionVector = (targetPosition - startPosition).Unit
-	local rightVector = directionVector:Cross((Vector3.new(0, 1, 0)))
-	local upVector = rightVector:Cross(directionVector)
-	return CFrame.fromMatrix(startPosition, rightVector, upVector)
-end
+lookAt = Hub.lookAt
 
 function SNOWshipPermanentPlayer(otherPlayer, callbackFunction)
 	if not Hub.canHarm(otherPlayer) then return false end
@@ -3819,15 +4119,24 @@ end
 local heldObjectName = nil
 Hub.attackerBindings = {}
 Hub.attackerBusy = {}
+Hub.attackerBindingEpoch=0
+function Hub.clearAttackerBindings()
+    Hub.attackerBindingEpoch+=1
+    for _,connection in ipairs(Hub.attackerBindings) do connection:Disconnect();Hub.connections[connection]=nil end
+    table.clear(Hub.attackerBindings)
+    Hub.attackerBusy={}
+    Hub.scanAttacker=nil
+    headConnection=nil
+end
 local function hookAttackerCharacter(boundCharacter)
-	for _, connection in ipairs(Hub.attackerBindings) do connection:Disconnect() end
-	table.clear(Hub.attackerBindings)
-	Hub.attackerBusy = {}
-	local generation = Hub.characterGeneration
+    if not Hub.alive or Player.Character~=boundCharacter then return end
+    Hub.clearAttackerBindings()
+    local generation=Hub.attackerBindingEpoch
+    local seenOwners={}
 	local function isCurrent()
 		local hum = boundCharacter:FindFirstChildOfClass("Humanoid")
 		return Hub.alive and AutoAttacker and boundCharacter == Player.Character
-			and generation == Hub.characterGeneration and hum and hum.Health > 0
+			and generation == Hub.attackerBindingEpoch and hum and hum.Health > 0
 	end
 	local function handleOwner(hitPart)
 		if not isCurrent() or not hitPart:IsDescendantOf(boundCharacter) then return end
@@ -3849,57 +4158,66 @@ local function hookAttackerCharacter(boundCharacter)
 
 				-- Check if it's not yourself and not authorized (add isAuthorized if you have it)
 				if Hub.canHarm(otherPlayer) and otherHumanoid and otherHumanoidRootPart then
-					if Hub.attackerBusy[otherPlayer] then return end
-					Hub.attackerBusy[otherPlayer] = true
-					-- Death mode counter action
-					local counterAction
-					local humanoidInstance = otherHumanoid
+					local busy = Hub.attackerBusy
+					if busy[otherPlayer] then return end
+					busy[otherPlayer] = true
+					local ok, actionError = xpcall(function()
+						-- Death mode counter action
+						local counterAction
+						local humanoidInstance = otherHumanoid
 
-					if isCurrent() and Hub.canHarm(otherPlayer) and humanoidInstance and humanoidInstance.Parent and otherHumanoidRootPart.Parent then
+						if isCurrent() and Hub.canHarm(otherPlayer) and humanoidInstance and humanoidInstance.Parent and otherHumanoidRootPart.Parent then
 
-						if AttackMode == "Kill" then
-							counterAction = function()
-								CreateSkyVelocity(otherHumanoidRootPart)
-								for _ = 0, 30 do
-									humanoidInstance.BreakJointsOnDeath = false
-									humanoidInstance:ChangeState(Enum.HumanoidStateType.Dead)
-									humanoidInstance.Jump = true
-									humanoidInstance.Sit = true
+							if AttackMode == "Kill" then
+								counterAction = function()
+									CreateSkyVelocity(otherHumanoidRootPart)
+									for _ = 0, 30 do
+										humanoidInstance.BreakJointsOnDeath = false
+										humanoidInstance:ChangeState(Enum.HumanoidStateType.Dead)
+										humanoidInstance.Jump = true
+										humanoidInstance.Sit = true
+									end
+									task.wait()
+									Hub.fire(ReplicatedStorage.GrabEvents.DestroyGrabLine, otherHumanoidRootPart)
 								end
-								task.wait()
-								Hub.fire(ReplicatedStorage.GrabEvents.DestroyGrabLine, otherHumanoidRootPart)
-							end
-						elseif AttackMode == "Fling" then
-							counterAction = function()
-								lookAtCFrame = lookAt(LocalPlayer.Character.HumanoidRootPart.Position, otherHumanoidRootPart.Position)
-								local bodyVelocity = Instance.new("BodyVelocity", otherPlayer.Character.HumanoidRootPart)
-								bodyVelocity.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
-								bodyVelocity.Velocity = Vector3.new(lookAtCFrame.lookVector.X, 0.5, lookAtCFrame.lookVector.Z) * 100
-								wait()
-								bodyVelocity:Destroy()
-								destroyGrabLineEvent:FireServer(otherHumanoidRootPart)
+							elseif AttackMode == "Fling" then
+								counterAction = function()
+									local lookAtCFrame = lookAt(LocalPlayer.Character.HumanoidRootPart.Position, otherHumanoidRootPart.Position)
+									local bodyVelocity = Instance.new("BodyVelocity", otherPlayer.Character.HumanoidRootPart)
+									bodyVelocity.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+									bodyVelocity.Velocity = Vector3.new(lookAtCFrame.lookVector.X, 0.5, lookAtCFrame.lookVector.Z) * 100
+									wait()
+									bodyVelocity:Destroy()
+									destroyGrabLineEvent:FireServer(otherHumanoidRootPart)
+								end
 							end
 						end
-					end
 
 
-					-- Execute SNOWship loop
-					for _ = 1, 50 do
-						if not isCurrent() or not Hub.canHarm(otherPlayer) or otherPlayer.Character ~= otherHumanoid.Parent then break end
-						if SNOWshipPlayer(otherPlayer, counterAction) then
-							break
+						if type(counterAction) ~= "function" then error("Unknown Auto Attacker mode: " .. tostring(AttackMode)) end
+						local completed = false
+						-- Execute SNOWship loop
+						for _ = 1, 50 do
+							if not isCurrent() or not Hub.canHarm(otherPlayer) or otherPlayer.Character ~= otherHumanoid.Parent then break end
+							if SNOWshipPlayer(otherPlayer, counterAction) then
+								completed = true
+								break
+							end
+							task.wait()
 						end
-						task.wait()
-					end
-					Hub.attackerBusy[otherPlayer] = nil
+						if not completed and isCurrent() then warn("[Arriva Auto Attacker] Action was not reached for " .. otherPlayer.Name .. ", ownership/range checks did not complete.") end
+					end, debug.traceback)
+					busy[otherPlayer] = nil
+					if not ok then warn("[Arriva Auto Attacker] " .. tostring(actionError)) end
 				end
-			end 
+			end
 		end
 	end
 	local function watchOwner(instance)
-		if instance.Name ~= "PartOwner" then return end
+		if instance.Name ~= "PartOwner" or seenOwners[instance] then return end
 		if not instance:IsA("StringValue") and not instance:IsA("ObjectValue") then return end
-		table.insert(Hub.attackerBindings, Hub.connect(instance.Changed, function()
+		seenOwners[instance]=true
+		table.insert(Hub.attackerBindings, Hub.connect(instance:GetPropertyChangedSignal("Value"), function()
 			task.spawn(function() handleOwner(instance) end)
 		end))
 		task.spawn(function() handleOwner(instance) end)
@@ -3919,14 +4237,14 @@ local function hookAttackerCharacter(boundCharacter)
 	end
 	for _, instance in ipairs(boundCharacter:GetDescendants()) do watchOwner(instance) end
 end
-if character then hookAttackerCharacter(character) end
-Hub.connect(Player.CharacterRemoving, function()
-	for _, connection in ipairs(Hub.attackerBindings) do connection:Disconnect() end
-	table.clear(Hub.attackerBindings)
-	table.clear(Hub.attackerBusy)
-	Hub.scanAttacker = nil
+if Player.Character then hookAttackerCharacter(Player.Character) end
+Hub.connect(Player.CharacterRemoving,Hub.clearAttackerBindings)
+Hub.connect(Player.CharacterAdded,function(char)
+    task.defer(function()
+        if Hub.alive and Player.Character==char then hookAttackerCharacter(char) end
+    end)
 end)
-Hub.connect(Player.CharacterAdded, hookAttackerCharacter)
+Hub.cleanup(Hub.clearAttackerBindings)
 
 -- Player Tab
 local PlayerView = Tabs.Player:AddLeftGroupbox("View & Movement")
@@ -4145,103 +4463,53 @@ PlayerESP:AddToggle("BoxESPWhite", {
 	end
 })
 
--- Nickname ESP
-PlayerESP:AddToggle("NicknameESP", {
-	Text = "Esp",
-	Default = false,
-	Callback = function(Value)
-		Hub.nameESPConnections = Hub.nameESPConnections or {}
-		for _, connection in ipairs(Hub.nameESPConnections) do connection:Disconnect() end
-		table.clear(Hub.nameESPConnections)
-		local function espConnect(signal, callback)
-			local connection = Hub.connect(signal, callback)
-			table.insert(Hub.nameESPConnections, connection)
-			return connection
-		end
-		local function createESP(plr)
-			if not Toggles.NicknameESP.Value then return end
-			if plr == Player then return end
-			if plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then
-				local hrp = plr.Character.HumanoidRootPart
-				if hrp:FindFirstChild("NameESP") then return end
-
-				local billboard = Hub.new("BillboardGui")
-				billboard.Name = "NameESP"
-				billboard.Adornee = hrp
-				billboard.Size = UDim2.new(0, 120, 0, 70)
-				billboard.StudsOffset = Vector3.new(0, 3.5, 0)
-				billboard.AlwaysOnTop = true
-				billboard.Parent = hrp
-
-				local container = Hub.new("Frame")
-				container.Size = UDim2.new(1, 0, 1, 0)
-				container.BackgroundTransparency = 1
-				container.Parent = billboard
-
-				local pfpFrame = Hub.new("Frame")
-				pfpFrame.Size = UDim2.new(0, 40, 0, 40)
-				pfpFrame.Position = UDim2.new(0.5, 0, 0, 0)
-				pfpFrame.AnchorPoint = Vector2.new(0.5, 0)
-				pfpFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
-				pfpFrame.BorderSizePixel = 0
-				pfpFrame.Parent = container
-
-				local pfpCorner = Hub.new("UICorner")
-				pfpCorner.CornerRadius = UDim.new(1, 0)
-				pfpCorner.Parent = pfpFrame
-
-				local pfpImage = Hub.new("ImageLabel")
-				pfpImage.Size = UDim2.new(1, 0, 1, 0)
-				pfpImage.BackgroundTransparency = 1
-				pfpImage.Image = "https://www.roblox.com/headshot-thumbnail/image?userId=" .. plr.UserId .. "&width=150&height=150&format=png"
-				pfpImage.Parent = pfpFrame
-
-				local pfpImageCorner = Hub.new("UICorner")
-				pfpImageCorner.CornerRadius = UDim.new(1, 0)
-				pfpImageCorner.Parent = pfpImage
-
-				local textLabel = Hub.new("TextLabel")
-				textLabel.Size = UDim2.new(1, 0, 0, 25)
-				textLabel.Position = UDim2.new(0, 0, 0, 45)
-				textLabel.BackgroundTransparency = 1
-				textLabel.Text = plr.DisplayName
-				textLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-				textLabel.TextStrokeTransparency = 0
-				textLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-				textLabel.Font = Enum.Font.GothamBold
-				textLabel.TextSize = 16
-				textLabel.TextScaled = true
-				textLabel.TextXAlignment = Enum.TextXAlignment.Center
-				textLabel.Parent = container
-			end
-		end
-
-		if Value then
-			for _, plr in pairs(Players:GetPlayers()) do 
-				createESP(plr) 
-				espConnect(plr.CharacterAdded, function() 
-					task.wait(0.1)
-					createESP(plr) 
-				end) 
-			end
-			espConnect(Players.PlayerAdded, function(plr) 
-				espConnect(plr.CharacterAdded, function() 
-					task.wait(0.1)
-					createESP(plr) 
-				end) 
-			end)
-		else
-			for _, plr in pairs(Players:GetPlayers()) do
-				if plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then
-					local hrp = plr.Character.HumanoidRootPart
-					if hrp:FindFirstChild("NameESP") then 
-						hrp.NameESP:Destroy() 
-					end
-				end
-			end
-		end
-	end
-})
+-- Main player ESP, including appearance controls.
+do
+(function()
+    local group=PlayerESP
+    local enabled,through,alpha,color=false,true,0.8,Color3.new(1,1,1)
+    local entries={};local elapsed=0
+    local function clear(p) local e=entries[p];if e then e.gui:Destroy();e.highlight:Destroy();entries[p]=nil end end
+    local function update()
+        for p,e in pairs(entries) do if not enabled or p.Parent~=Players or p.Character~=e.character then clear(p) end end
+        if not enabled then return end
+        for _,p in ipairs(Players:GetPlayers()) do if p~=Player then
+            local char=p.Character;local head=char and char:FindFirstChild("Head")
+            local hum=char and char:FindFirstChildOfClass("Humanoid")
+            if head and hum and hum.Health>0 then
+                local e=entries[p]
+                if not e then
+                    local gui=Hub.new("BillboardGui",head);gui.Name="NameESP";gui.Adornee=head
+                    gui.Size=UDim2.fromOffset(180,58);gui.StudsOffset=Vector3.new(0,3,0);gui.MaxDistance=1200
+                    local avatar=Hub.new("ImageLabel",gui);avatar.Size=UDim2.fromOffset(32,32);avatar.BackgroundTransparency=1
+                    avatar.Image=string.format("rbxthumb://type=AvatarHeadShot&id=%d&w=150&h=150",p.UserId)
+                    local text=Hub.new("TextLabel",gui);text.Position=UDim2.fromOffset(36,0);text.Size=UDim2.new(1,-36,1,0)
+                    text.BackgroundTransparency=1;text.TextSize=16;text.TextWrapped=true
+                    text.Font=Enum.Font.GothamBold;text.TextStrokeColor3=Color3.new(0,0,0);text.TextStrokeTransparency=0
+                    local highlight=Hub.new("Highlight",char);highlight.Adornee=char
+                    e={gui=gui,text=text,highlight=highlight,character=char};entries[p]=e
+                end
+                e.gui.AlwaysOnTop=through;e.text.TextColor3=Color3.new(1,1,1);e.highlight.FillColor=color;e.highlight.OutlineColor=Color3.new(1,1,1)
+                e.highlight.FillTransparency=alpha;e.highlight.OutlineTransparency=0.2
+                e.highlight.DepthMode=through and Enum.HighlightDepthMode.AlwaysOnTop or Enum.HighlightDepthMode.Occluded
+                e.text.Text=string.format("%s (@%s)\nHP %.0f",p.DisplayName,p.Name,hum.Health)
+            else clear(p) end
+        end end
+    end
+    group:AddToggle("NicknameESP",{Text="ESP",Default=false,Callback=function(on) enabled=on;update() end})
+    group:AddToggle("DetailedESPThroughWalls",{Text="Visible through walls",Default=true,Callback=function(on) through=on;update() end})
+    group:AddSlider("DetailedESPTransparency",{Text="Fill transparency",Default=80,Min=0,Max=100,Rounding=0,Callback=function(value) alpha=value/100;update() end})
+    group:AddInput("DetailedESPColor",{Text="Fill color hex",Default="FFFFFF",Finished=true,Callback=function(value)
+        local hex=tostring(value):gsub("#","");if #hex==6 and hex:match("^%x+$") then
+            color=Color3.fromRGB(tonumber(hex:sub(1,2),16),tonumber(hex:sub(3,4),16),tonumber(hex:sub(5,6),16));update()
+        end
+    end})
+    group:AddLabel("Player ESP appearance. PCLD View remains a separate map detector overlay.")
+    Hub.connect(RunService.Heartbeat,function(dt) elapsed+=dt;if elapsed>=0.5 then elapsed=0;update() end end)
+    Hub.connect(Players.PlayerRemoving,clear)
+    Hub.cleanup(function() enabled=false;for p in pairs(entries) do clear(p) end end)
+end)()
+end
 
 -- Performance
 local oldProperties = {}
@@ -4385,20 +4653,93 @@ local BlobGroup = Tabs.Target:AddRightGroupbox("Blobman Control")
 local WhitelistGroup = Tabs.Whitelist:AddLeftGroupbox("Protected Players")
 local TargetNotificationGroup = Tabs.Notifications:AddLeftGroupbox("Target Alerts")
 
-local SelectedPlayer = nil
+local SelectedPlayer = nil -- Primary selection for one-shot actions.
+Hub.selectedTargets = {}
+Hub.targetCursors = {}
+-- A stopped worker must not resume when the same toggle is enabled again.
+Hub.targetLoopRuns = {}
+function Hub.beginTargetLoop(key, enabled)
+    local previous = Hub.targetLoopRuns[key]
+    if previous then previous.enabled = false end
+    local run = enabled and {enabled = true} or previous or {enabled = false}
+    Hub.targetLoopRuns[key] = run
+    return function() return Hub.alive and run.enabled and Hub.targetLoopRuns[key] == run end,
+        function() return Hub.targetLoopRuns[key] == run end
+end
+function Hub.loopTargetReady(player, character)
+    if not player or player.Parent ~= Players or not Hub.canHarm(player) then return false end
+    local char = player.Character
+    if not char or (character and char ~= character) or not char:IsDescendantOf(Workspace) then return false end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local inPlot = player:FindFirstChild("InPlot")
+    return char:FindFirstChild("HumanoidRootPart") ~= nil and hum ~= nil and hum.Health > 0
+        and not (inPlot and inPlot.Value)
+end
+function Hub.getBlobSeat()
+    local char = Player.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local seat = hum and hum.Health > 0 and hum.SeatPart
+    local blob = seat and seat.Parent
+    if blob and blob.Name == "CreatureBlobman" and blob:IsDescendantOf(Workspace) then return seat end
+    return nil
+end
+function Hub.isSelectedTarget(player)
+    return player ~= nil and Hub.selectedTargets[player.UserId] == player
+end
+function Hub.setSelectedTargets(selection)
+    local chosen = {}
+    -- Accept legacy single selections as well as multi-select maps and arrays.
+    if type(selection) == "string" then selection = {selection} end
+    for key, value in pairs(type(selection) == "table" and selection or {}) do
+        local label = type(key) == "number" and value or (value and key or nil)
+        local player = type(label) == "string" and getPlayerFromSelection(label) or nil
+        if player and player ~= Player then chosen[player.UserId] = player end
+    end
+    Hub.selectedTargets = chosen
+    SelectedPlayer = nil
+    for _, player in ipairs(Players:GetPlayers()) do
+        if chosen[player.UserId] then SelectedPlayer = player; break end
+    end
+end
+function Hub.nextLoopTarget(key, dwell)
+    local candidates = {}
+    for _, player in pairs(Hub.selectedTargets) do
+        if Hub.loopTargetReady(player) then
+            table.insert(candidates, player)
+        end
+    end
+    table.sort(candidates, function(a, b) return a.UserId < b.UserId end)
+    local cursor = Hub.targetCursors[key]
+    if cursor and dwell and os.clock() < cursor.untilTime then
+        for _, player in ipairs(candidates) do
+            if player.UserId == cursor.id then return player end
+        end
+    end
+    local target = candidates[1]
+    if cursor then
+        for _, player in ipairs(candidates) do
+            if player.UserId > cursor.id then target = player; break end
+        end
+    end
+    if target then Hub.targetCursors[key] = {id = target.UserId, untilTime = os.clock() + (dwell or 0)} end
+    return target
+end
 local kickLoopEnabled = false
 local loopKillEnabled = false
 local loopKillEnabledAll = false
 
 
 
-local function autoblob()
+local function autoblob(active)
+    active = active or function() return Hub.alive end
+    if not active() then return false end
+    if Hub.getBlobSeat() then return true end
 	local plr = Player
 	local char = plr.Character
 	local hrp = char and char:FindFirstChild("HumanoidRootPart")
 	local hum = char and char:FindFirstChild("Humanoid")
 
-	if not hrp or not hum then return end
+	if not hrp or not hum or hum.Health <= 0 then return false end
 
 	local folderName = plr.Name .. "SpawnedInToys"
 	local folder = workspace:FindFirstChild(folderName)
@@ -4407,6 +4748,7 @@ local function autoblob()
 	if not blob then
 		task.spawn(function()
 			pcall(function()
+                if not active() or Player.Character ~= char then return end
 				Hub.invoke(ReplicatedStorage.MenuToys.SpawnToyRemoteFunction, "CreatureBlobman", hrp.CFrame, Vector3.zero)
 			end)
 		end)
@@ -4420,9 +4762,10 @@ local function autoblob()
 		end
 	end
 
+	if not active() or Player.Character ~= char or not hrp.Parent or hum.Health <= 0 then return false end
 	if blob then
 		local seat = blob:WaitForChild("VehicleSeat", 5)
-		if seat then
+		if seat and active() and Player.Character == char and hrp.Parent then
 			local t = tick()
 			repeat
 				if not hum.SeatPart then
@@ -4431,100 +4774,115 @@ local function autoblob()
 					seat:Sit(hum)
 				end
 				RunService.Heartbeat:Wait()
-			until hum.SeatPart == seat or tick() - t > 1.5
+			until hum.SeatPart == seat or tick() - t > 1.5 or Player.Character ~= char or not seat.Parent or not active()
 		end
 	end
+    return Hub.getBlobSeat() ~= nil
 end
 
 TargetGroup:AddDropdown("KickPlayerDropdown", {
 	Values = getPlayerList(),
-	Default = 1,
-	Multi = false,
-	Text = "select Player",
+	Default = {},
+	Multi = true,
+	Text = "Select players",
 	Callback = function(Value)
-		SelectedPlayer = getPlayerFromSelection(Value)
+		Hub.setSelectedTargets(Value)
 	end,
 })
+
+TargetGroup:AddLabel("Loops cycle through selected players. One-shot actions use the first selected player in the server list.")
 
 TargetGroup:AddButton({
 	Text = "refresh player list",
 	Func = function()
 		Options.KickPlayerDropdown:SetValues(getPlayerList())
-		Options.KickPlayerDropdown:SetValue(nil)
-		SelectedPlayer = nil
 	end
 })
+
+do
+    local function refreshTargetSelector()
+        if Options.KickPlayerDropdown then Options.KickPlayerDropdown:SetValues(getPlayerList()) end
+    end
+    Hub.connect(Players.PlayerAdded,function() Hub.queueRefresh("mainPlayerSelector",refreshTargetSelector) end)
+    Hub.connect(Players.PlayerRemoving,function(person)
+        Hub.selectedTargets[person.UserId] = nil
+        if SelectedPlayer==person then
+            SelectedPlayer=nil
+            for _, remaining in ipairs(Players:GetPlayers()) do
+                if Hub.isSelectedTarget(remaining) then SelectedPlayer=remaining;break end
+            end
+        end
+        Hub.queueRefresh("mainPlayerSelector",refreshTargetSelector)
+    end)
+end
 
 TargetGroup:AddToggle("LoopKickToggle", {
 	Text = "Kick (spam grab)",
 	Default = false,
 	Callback = function(on)
+        local running, ownsRun = Hub.beginTargetLoop("LoopKickToggle", on)
 		kickLoopEnabled = on
 
 		local target = SelectedPlayer
-		while on and not target do
-			task.wait(0.5)
-			target = SelectedPlayer
+
+		if not on then
+			kickLoopEnabled = false
+			return
 		end
 
-		if not on then    
-			kickLoopEnabled = false    
-			return    
-		end
-
-		task.spawn(function()    
+		task.spawn(function()
 			local RS = ReplicatedStorage
-			local RunService = game:GetService("RunService")    
-			local GE = RS:WaitForChild("GrabEvents")    
+			local RunService = game:GetService("RunService")
+			local GE = RS:WaitForChild("GrabEvents")
 
-			local myChar = Player.Character    
-			local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")    
-			if not myRoot then return end    
+			local myChar = Player.Character
+			local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+			if not myRoot then return end
 
-			local savedPos = myRoot.CFrame    
-			local dragging = false    
-			local grabStartTime = 0    
+			local savedPos = myRoot.CFrame
+			local dragging = false
+			local grabStartTime = 0
 
-			while kickLoopEnabled do    
-				while on and not target do
-					task.wait(0.5)
-					target = SelectedPlayer
-				end
+			while running() do
+                local nextTarget = Hub.nextLoopTarget("spamGrab", 1)
+                if nextTarget ~= target then dragging = false; grabStartTime = 0 end
+                target = nextTarget
+                if not target then task.wait(0.2); continue end
 
-				local tChar = Hub.canHarm(target) and target.Character or nil    
-				local tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")    
-				local tHum = tChar and tChar:FindFirstChild("Humanoid")    
+				local tChar = Hub.canHarm(target) and target.Character or nil
+				local tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")
+				local tHum = tChar and tChar:FindFirstChild("Humanoid")
 
-				myChar = Player.Character    
-				myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")    
+				myChar = Player.Character
+				myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
 
-				if tRoot and tHum and tHum.Health > 0 and myRoot then    
+				if tRoot and tHum and tHum.Health > 0 and myRoot then
 
 					if Hub.canAffect(tRoot) then tRoot.AssemblyLinearVelocity = Vector3.zero end
 					if Hub.canAffect(tRoot) then tRoot.AssemblyAngularVelocity = Vector3.zero end
 					if Hub.canAffect(tRoot) then tRoot.Velocity = Vector3.zero end
 
-					if not dragging then    
+					if not dragging then
 						if Hub.canAffect(tRoot) then myRoot.CFrame = tRoot.CFrame end
-						myRoot.Velocity = Vector3.zero    
+						myRoot.Velocity = Vector3.zero
 
-						pcall(function()    
+						pcall(function()
 							if Hub.canAffect(tHum) then tHum.PlatformStand = true end
 							if Hub.canAffect(tHum) then tHum.Sit = true end
-							Hub.fire(GE.SetNetworkOwner, tRoot, myRoot.CFrame)    
-							Hub.fire(GE.CreateGrabLine, tRoot, Vector3.zero, tRoot.Position, false)    
-						end)    
+							Hub.fire(GE.SetNetworkOwner, tRoot, myRoot.CFrame)
+							Hub.fire(GE.CreateGrabLine, tRoot, Vector3.zero, tRoot.Position, false)
+						end)
 
-						if grabStartTime == 0 then grabStartTime = tick() end    
-						if tick() - grabStartTime > 0.5 then    
-							dragging = true    
-							grabStartTime = 0    
-						end    
-					else    
-						myRoot.CFrame = savedPos    
-						myRoot.Velocity = Vector3.zero    
+						if grabStartTime == 0 then grabStartTime = tick() end
+						if tick() - grabStartTime > 0.5 then
+							dragging = true
+							grabStartTime = 0
+						end
+					else
+						myRoot.CFrame = savedPos
+						myRoot.Velocity = Vector3.zero
 
-						local lockPos = savedPos * CFrame.new(0, 17, 0)    
+						local lockPos = savedPos * CFrame.new(0, 17, 0)
 
 						if Hub.canAffect(tRoot) then tRoot.CFrame = lockPos end
 						if Hub.canAffect(tRoot) then tRoot.Velocity = Vector3.zero end
@@ -4533,59 +4891,58 @@ TargetGroup:AddToggle("LoopKickToggle", {
 						if Hub.canAffect(tHum) then tHum.PlatformStand = true end
 						if Hub.canAffect(tHum) then tHum.Sit = false end
 
-						pcall(function()      
-							Hub.fire(GE.SetNetworkOwner, tRoot, lockPos)  
-							Hub.fire(GE.CreateGrabLine, tRoot, Vector3.zero, tRoot.Position, false)    
-							Hub.fire(GE.DestroyGrabLine, tRoot)    
-						end)    
-					end    
-				else    
-					dragging = false    
-					grabStartTime = 0    
-					if myRoot then    
-						myRoot.CFrame = savedPos    
-						myRoot.Velocity = Vector3.zero    
-					end    
-				end    
+						pcall(function()
+							Hub.fire(GE.SetNetworkOwner, tRoot, lockPos)
+							Hub.fire(GE.CreateGrabLine, tRoot, Vector3.zero, tRoot.Position, false)
+							Hub.fire(GE.DestroyGrabLine, tRoot)
+						end)
+					end
+				else
+					dragging = false
+					grabStartTime = 0
+					if myRoot then
+						myRoot.CFrame = savedPos
+						myRoot.Velocity = Vector3.zero
+					end
+				end
 
-				RunService.Heartbeat:Wait()    
-			end    
+				RunService.Heartbeat:Wait()
+			end
 
-			if myRoot then    
-				myRoot.CFrame = savedPos    
-				myRoot.Velocity = Vector3.zero    
-			end    
-		end)    
+            if not ownsRun() then return end
+			if myRoot then
+				myRoot.CFrame = savedPos
+				myRoot.Velocity = Vector3.zero
+			end
+		end)
 	end
 })
 
 
 
--- Loop Kill Single
+-- Loop Kill selected players
 TargetGroup:AddToggle("LoopKillToggle", {
 	Text = "Loop kill",
 	Default = false,
 	Callback = function(on)
+        local running, ownsRun = Hub.beginTargetLoop("LoopKillToggle", on)
 		Hub.requestSave()
 		loopKillEnabled = on
 		if on then
 			local target = SelectedPlayer
-			if not target then 
+			if not target then
 				notify("System", "Select target first", 3)
 				Toggles.LoopKillToggle:SetValue(false)
-				return 
+				return
 			end
 
 			task.spawn(function()
 				local RS = ReplicatedStorage
 				local GE = RS:WaitForChild("GrabEvents")
 
-				while loopKillEnabled do
-					if not Hub.canHarm(target) or not target.Character then
-						loopKillEnabled = false
-						Toggles.LoopKillToggle:SetValue(false)
-						break
-					end
+				while running() do
+                    target = Hub.nextLoopTarget("loopKill")
+                    if not target then task.wait(0.2); continue end
 
 					local myChar = Player.Character
 					local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
@@ -4598,19 +4955,20 @@ TargetGroup:AddToggle("LoopKillToggle", {
 						local currentPos = myRoot.CFrame
 
 						for _ = 0, 50 do
-							if not loopKillEnabled or not Hub.canHarm(target) or not tRoot.Parent then break end
+							if not running() or not Hub.isSelectedTarget(target) or not Hub.loopTargetReady(target, tChar) or not tRoot.Parent then break end
 
 							applyNoclip(myChar)
 							SNOWship(tRoot)
 
 							-- Check if SNOWship was successful
-							if not loopKillEnabled or (CheckNetworkOwnerShipOnPlayer and CheckNetworkOwnerShipOnPlayer(target)) or tRoot.AssemblyLinearVelocity.Magnitude > 500 then
+							if not running() or (CheckNetworkOwnerShipOnPlayer and CheckNetworkOwnerShipOnPlayer(target)) or tRoot.AssemblyLinearVelocity.Magnitude > 500 then
 								Hub.fire(GE.DestroyGrabLine, tRoot)
 								CreateSkyVelocity(tRoot)
 								break
 							end
 
 							task.wait()
+                            if not running() or not Hub.isSelectedTarget(target) or not Hub.loopTargetReady(target, tChar) or Player.Character ~= myChar then break end
 
 							-- Teleport to target
 							if tRoot.Position.Y <= -12 then
@@ -4627,18 +4985,20 @@ TargetGroup:AddToggle("LoopKillToggle", {
 							if Hub.canAffect(tHum) then tHum.Sit = false end
 						end
 
+                        if not ownsRun() then return end
 						if myRoot then
 							restoreCollision()
 							myRoot.CFrame = currentPos
 							myRoot.Velocity = Vector3.zero
 						end
 
-						task.wait(0.2) 
+						task.wait(0.2)
 					else
 						task.wait(0.5)
 					end
 				end
 
+                if not ownsRun() then return end
 				restoreCollision()
 				local char = Player.Character
 				local root = char and char:FindFirstChild("HumanoidRootPart")
@@ -4655,6 +5015,7 @@ TargetGroup:AddToggle("LoopKillToggleAll", {
 	Text = "Loop kill All",
 	Default = false,
 	Callback = function(on)
+        local running, ownsRun = Hub.beginTargetLoop("LoopKillToggleAll", on)
 		Hub.requestSave()
 		loopKillEnabledAll = on
 		if on then
@@ -4663,7 +5024,7 @@ TargetGroup:AddToggle("LoopKillToggleAll", {
 				local PS = Players
 				local GE = RS:WaitForChild("GrabEvents")
 
-				while loopKillEnabledAll do
+				while running() do
 					local myChar = Player.Character
 					local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
 
@@ -4671,7 +5032,7 @@ TargetGroup:AddToggle("LoopKillToggleAll", {
 						local currentPos = myRoot.CFrame
 
 						for _, target in pairs(PS:GetPlayers()) do
-							if not loopKillEnabledAll then break end
+							if not running() then break end
 							if not Hub.canHarm(target) then continue end
 
 							if not Hub.canHarm(target) or not target.Character then
@@ -4689,19 +5050,20 @@ TargetGroup:AddToggle("LoopKillToggleAll", {
 
 							if tRoot and tHum and tHead and tHum.Health > 0 and not isInPlot then
 								for _ = 0, 50 do
-									if not loopKillEnabledAll or not Hub.canHarm(target) or not tRoot.Parent then break end
+									if not running() or not Hub.loopTargetReady(target, tChar) or not tRoot.Parent then break end
 
 									applyNoclip(myChar)
 									SNOWship(tRoot)
 
 									-- Check if SNOWship was successful
-									if not loopKillEnabledAll or (CheckNetworkOwnerShipOnPlayer and CheckNetworkOwnerShipOnPlayer(target)) or tRoot.AssemblyLinearVelocity.Magnitude > 500 then
+									if not running() or (CheckNetworkOwnerShipOnPlayer and CheckNetworkOwnerShipOnPlayer(target)) or tRoot.AssemblyLinearVelocity.Magnitude > 500 then
 										Hub.fire(GE.DestroyGrabLine, tRoot)
 										CreateSkyVelocity(tRoot)
 										break
 									end
 
 									task.wait()
+                            if not running() or not Hub.loopTargetReady(target, tChar) or Player.Character ~= myChar then break end
 
 									-- Teleport to target
 									if tRoot.Position.Y <= -12 then
@@ -4722,6 +5084,7 @@ TargetGroup:AddToggle("LoopKillToggleAll", {
 							end
 						end
 
+                        if not ownsRun() then return end
 						if myRoot then
 							restoreCollision()
 							myRoot.CFrame = currentPos
@@ -4732,6 +5095,7 @@ TargetGroup:AddToggle("LoopKillToggleAll", {
 					task.wait(5)
 				end
 
+                if not ownsRun() then return end
 				restoreCollision()
 				local char = Player.Character
 				local root = char and char:FindFirstChild("HumanoidRootPart")
@@ -4743,33 +5107,38 @@ TargetGroup:AddToggle("LoopKillToggleAll", {
 	end
 })
 
+local grabBlobLoopEnabled = false
 TargetGroup:AddToggle("LoopKickToggle2", {
 	Text = "Loop Kick (grab + blob)",
 	Default = false,
 	Callback = function(on)
-		kickLoopEnabled = on
+        local running, ownsRun = Hub.beginTargetLoop("LoopKickToggle2", on)
+		grabBlobLoopEnabled = on
 		Hub.requestSave()
 
 		local target = SelectedPlayer
-		while on and not target do
-			task.wait(0.5)
-			target = SelectedPlayer
-		end
 
 		local char = Player.Character
 		local hum = char and char:FindFirstChild("Humanoid")
 		local seat = hum and hum.SeatPart
 
-		if not on then 
-			kickLoopEnabled = false 
-			return 
+		if not on then
+            if not ownsRun() then return end
+			grabBlobLoopEnabled = false
+			return
 		end
 
-		if spawnedInToysFolder and spawnedInToysFolder:FindFirstChild("CreatureBlob") then
-			notify("No blob found!","Spawning blob!")
-		else
-			autoblob()
-		end
+        autoblob(running)
+        if not running() then return end
+
+        char = Player.Character
+        hum = char and char:FindFirstChild("Humanoid")
+        seat = hum and hum.SeatPart
+        if not seat or seat.Parent.Name ~= "CreatureBlobman" then
+            notify("System", "Sit in a Blobman before enabling this loop", 3)
+            Toggles.LoopKickToggle2:SetValue(false)
+            return
+        end
 
 		task.spawn(function()
 			local RS = ReplicatedStorage
@@ -4785,16 +5154,22 @@ TargetGroup:AddToggle("LoopKickToggle2", {
 
 			local R_Det = blob:FindFirstChild("RightDetector")
 			local R_Weld = R_Det and (R_Det:FindFirstChild("RightWeld") or R_Det:FindFirstChildWhichIsA("Weld"))
+            if not running() then return end
+            if not blobRoot or not CG or not CD or not R_Det or not R_Weld then
+                notify("System", "Blobman parts are not ready; try again after it loads", 3)
+                Toggles.LoopKickToggle2:SetValue(false)
+                return
+            end
 
-			local SavedPos = blobRoot.CFrame 
+			local SavedPos = blobRoot.CFrame
 
 			local tChar = Hub.canHarm(target) and target.Character or nil
 			local tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")
 
 			if tRoot and blobRoot then
 				local bringStart = tick()
-				while tick() - bringStart < 0.35 do
-					if not kickLoopEnabled then break end
+				while running() and tick() - bringStart < 0.35 do
+					if not running() or not Hub.isSelectedTarget(target) or not Hub.loopTargetReady(target, tChar) then break end
 
 					if Hub.canAffect(tRoot) then blobRoot.CFrame = tRoot.CFrame end
 					blobRoot.Velocity = Vector3.zero
@@ -4807,18 +5182,20 @@ TargetGroup:AddToggle("LoopKickToggle2", {
 					RunService.Heartbeat:Wait()
 				end
 
-				blobRoot.CFrame = SavedPos
-				blobRoot.Velocity = Vector3.zero
+                if not ownsRun() then return end
+                if blobRoot.Parent then
+				    blobRoot.CFrame = SavedPos
+				    blobRoot.Velocity = Vector3.zero
+                end
 				task.wait(0.05)
 			end
 
 			local packetTimer = 0
 
-			while kickLoopEnabled do
-				if not Hub.canHarm(target) or not target.Character then
-					task.wait(0.5)
-					target = SelectedPlayer
-				end
+			while running() do
+                if Hub.getBlobSeat() ~= seat or not blobRoot.Parent then task.wait(0.2); continue end
+                target = Hub.nextLoopTarget("grabBlob", 1)
+                if not target then task.wait(0.2); continue end
 
 				local tChar = Hub.canHarm(target) and target.Character or nil
 				local tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")
@@ -4858,11 +5235,11 @@ TargetGroup:AddToggle("LoopKickToggle2", {
 					blobRoot.Velocity = Vector3.zero
 				end
 
-				if not kickLoopEnabled then break end
+				if not running() then break end
 				RunService.Heartbeat:Wait()
 			end
 
-			kickLoopEnabled = false
+			grabBlobLoopEnabled = false
 			if Toggles.LoopKickToggle2 then Toggles.LoopKickToggle2:SetValue(false) end
 
 			if blobRoot then
@@ -4880,30 +5257,35 @@ TargetGroup:AddToggle("DualHandLoopKick", {
 	Text = "Loop Kick",
 	Default = false,
 	Callback = function(on)
+        local running, ownsRun = Hub.beginTargetLoop("DualHandLoopKick", on)
 		Hub.requestSave()
 		loopKickDualActive = on
 		if on then
-			if not Hub.canHarm(SelectedPlayer) then 
+			if not Hub.nextLoopTarget("dualKick") then
 				notify("Error", "Select target first", 3)
 				Toggles.DualHandLoopKick:SetValue(false)
-				return 
+				return
 			end
-			if spawnedInToysFolder and spawnedInToysFolder:FindFirstChild("CreatureBlob") then
-				notify("No blob found!","Spawning blob!")
-			else
-				autoblob()
-			end
+        autoblob(running)
+        if not running() then return end
 			task.spawn(function()
 				local lastTargetCharDual = nil
 				local bp = nil
 
-				while loopKickDualActive do
-					local target = SelectedPlayer
+				while running() do
+                    local target = Hub.nextLoopTarget("dualKick", 1)
+                    if not target then
+                        if bp then bp:Destroy(); bp = nil end
+                        lastTargetCharDual = nil
+                        task.wait(0.2); continue
+                    end
 					local char = Player.Character
 					local hum = char and char:FindFirstChild("Humanoid")
-					local seat = hum and hum.SeatPart
+					local seat = Hub.getBlobSeat()
 
 					if not seat or not target or not target.Parent then
+                        if bp then bp:Destroy(); bp = nil end
+                        lastTargetCharDual = nil
 						task.wait(0.5)
 						continue
 					end
@@ -4918,6 +5300,9 @@ TargetGroup:AddToggle("DualHandLoopKick", {
 					local rightDet = seatParent:FindFirstChild("RightDetector")
 					local leftWeld = leftDet and leftDet:FindFirstChild("LeftWeld")
 					local rightWeld = rightDet and rightDet:FindFirstChild("RightWeld")
+                    if not leftDet or not rightDet or not leftWeld or not rightWeld then
+                        task.wait(0.2); continue
+                    end
 
 					local hrp = char:FindFirstChild("HumanoidRootPart")
 
@@ -4926,38 +5311,49 @@ TargetGroup:AddToggle("DualHandLoopKick", {
 					local targetHum = targetChar and targetChar:FindFirstChild("Humanoid")
 
 					if targetHRP and targetHum and targetHum.Health > 0 then
+                        repeat -- Abandon only this target's handshake if it changes during a yield.
 						if targetChar ~= lastTargetCharDual then
 							lastTargetCharDual = targetChar
 							if bp then bp:Destroy() bp = nil end
 							if hrp then hrp.CFrame = targetHRP.CFrame * CFrame.new(0, 25, 0) end
 							task.wait(0.2)
+                            if not running() or not Hub.isSelectedTarget(target) or not Hub.loopTargetReady(target, targetChar) or Hub.getBlobSeat() ~= seat then break end
 							Hub.fire(grab, leftDet, targetHRP, leftWeld)
 							task.wait(0.3)
+                            if not running() or not Hub.isSelectedTarget(target) or not Hub.loopTargetReady(target, targetChar) or Hub.getBlobSeat() ~= seat then break end
 							Hub.fire(drop, leftWeld, targetHRP)
 							task.wait(0.1)
+                            if not running() or not Hub.isSelectedTarget(target) or not Hub.loopTargetReady(target, targetChar) or Hub.getBlobSeat() ~= seat then break end
 							bp = Hub.new("BodyPosition")
 							bp.Position = Vector3.new(0, 999999, 0)
 							bp.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
 							bp.Parent = targetHRP
 							Hub.fire(grab, leftDet, targetHRP, leftWeld)
 							task.wait(0.2)
+                            if not running() or not Hub.isSelectedTarget(target) or not Hub.loopTargetReady(target, targetChar) or Hub.getBlobSeat() ~= seat then break end
 							Hub.fire(drop, leftWeld, targetHRP)
 						end
 
 						Hub.fire(grab, leftDet, targetHRP, leftWeld)
 						task.wait()
+                        if not running() or not Hub.isSelectedTarget(target) or not Hub.loopTargetReady(target, targetChar) or Hub.getBlobSeat() ~= seat then break end
 						Hub.fire(drop, leftWeld, targetHRP)
 						task.wait()
+                        if not running() or not Hub.isSelectedTarget(target) or not Hub.loopTargetReady(target, targetChar) or Hub.getBlobSeat() ~= seat then break end
 						Hub.fire(grab, rightDet, targetHRP, rightWeld)
 						task.wait()
+                        if not running() or not Hub.isSelectedTarget(target) or not Hub.loopTargetReady(target, targetChar) or Hub.getBlobSeat() ~= seat then break end
 						Hub.fire(drop, rightWeld, targetHRP)
 						task.wait()
+                        if not running() or not Hub.isSelectedTarget(target) or not Hub.loopTargetReady(target, targetChar) or Hub.getBlobSeat() ~= seat then break end
 						Hub.fire(grab, leftDet, targetHRP, leftWeld)
 						Hub.fire(grab, rightDet, targetHRP, rightWeld)
 						task.wait()
+                        if not running() or not Hub.isSelectedTarget(target) or not Hub.loopTargetReady(target, targetChar) or Hub.getBlobSeat() ~= seat then break end
 						Hub.fire(drop, leftWeld, targetHRP)
 						Hub.fire(drop, rightWeld, targetHRP)
 						task.wait()
+                        until true
 					else
 						task.wait(0.1)
 					end
@@ -4981,6 +5377,7 @@ TargetGroup:AddToggle("PlayerFlingBtn", {
 	Text = "Fling",
 	Default = false,
 	Callback = function(on)
+        local running, ownsRun = Hub.beginTargetLoop("PlayerFlingBtn", on)
 		Hub.requestSave()
 		playerFlingActive = on
 
@@ -5000,16 +5397,17 @@ TargetGroup:AddToggle("PlayerFlingBtn", {
 			notify("Maestro", "Fling Mode Activated. DO NOT MOVE.", 3)
 
 			task.spawn(function()
-				while playerFlingActive do
-					local target = SelectedPlayer
+				while running() do
+                    local target = Hub.nextLoopTarget("fling")
+                    if not target then task.wait(0.2); continue end
 
 					local char = Player.Character
 					local hrp = char and char:FindFirstChild("HumanoidRootPart")
 					local hum = char and char:FindFirstChild("Humanoid")
 
-					if not hrp or not hum then 
-						task.wait(0.5) 
-						continue 
+					if not hrp or not hum then
+						task.wait(0.5)
+						continue
 					end
 
 					if target and target.Parent then
@@ -5026,8 +5424,8 @@ TargetGroup:AddToggle("PlayerFlingBtn", {
 								flingBAV.AngularVelocity = Vector3.new(0, 10000, 0)
 								flingBAV.P = 10000
 								flingBAV.Parent = hrp
-								Hub.assetTargets[flingBAV] = tRoot
 							end
+                            Hub.assetTargets[flingBAV] = tRoot
 
 							for _, part in pairs(char:GetDescendants()) do
 								if part:IsA("BasePart") then
@@ -5036,14 +5434,14 @@ TargetGroup:AddToggle("PlayerFlingBtn", {
 							end
 
 							local loop = Hub.connect(RunService.Heartbeat, function()
-								if not playerFlingActive or not Hub.canHarm(target) or not tRoot or not tRoot.Parent then return end
+								if not running() or not Hub.isSelectedTarget(target) or not Hub.loopTargetReady(target, tChar) or not tRoot or not tRoot.Parent then return end
 								if Hub.canAffect(tRoot) then hrp.CFrame = tRoot.CFrame end
-								hrp.Velocity = Vector3.zero 
+								hrp.Velocity = Vector3.zero
 							end)
 
 							local startTime = tick()
 							while tick() - startTime < 1.5 do
-								if not playerFlingActive or not Hub.canHarm(target) or not tRoot.Parent then break end
+								if not running() or not Hub.isSelectedTarget(target) or not Hub.loopTargetReady(target, tChar) or not tRoot.Parent then break end
 								task.wait(0.1)
 							end
 
@@ -5059,6 +5457,7 @@ TargetGroup:AddToggle("PlayerFlingBtn", {
 					task.wait(0.1)
 				end
 
+                if not ownsRun() then return end
 				if flingBAV then flingBAV:Destroy() flingBAV = nil end
 
 				local char = Player.Character
@@ -5101,140 +5500,114 @@ BlobGroup:AddToggle("AutoSitZ", {
 })
 
 Hub.connect(UserInputService.InputBegan, function(input, processed)
-	if not processed and input.KeyCode == Enum.KeyCode.B and _G.AutoSitBlobZ then
-		local plr = Player
-		local char = plr.Character
-		local hrp = char and char:FindFirstChild("HumanoidRootPart")
-		local hum = char and char:FindFirstChild("Humanoid")
-
-		if not hrp or not hum then return end
-
-		local folderName = plr.Name .. "SpawnedInToys"
-		local folder = workspace:FindFirstChild(folderName)
-		local blob = folder and folder:FindFirstChild("CreatureBlobman")
-
-		if not blob then
-			task.spawn(function()
-				pcall(function()
-					Hub.invoke(ReplicatedStorage.MenuToys.SpawnToyRemoteFunction, "CreatureBlobman", hrp.CFrame, Vector3.zero)
-				end)
-			end)
-
-			if not folder then
-				folder = workspace:WaitForChild(folderName, 5)
-			end
-
-			if folder then
-				blob = folder:WaitForChild("CreatureBlobman", 5)
-			end
-		end
-
-		if blob then
-			local seat = blob:WaitForChild("VehicleSeat", 5)
-			if seat then
-				local t = tick()
-				repeat
-					if not hum.SeatPart then
-						hrp.CFrame = seat.CFrame + Vector3.new(0, 1, 0)
-						hrp.Velocity = Vector3.zero
-						seat:Sit(hum)
-					end
-					RunService.Heartbeat:Wait()
-				until hum.SeatPart == seat or tick() - t > 1.5
-			end
-		end
-	end
+    if not processed and not UserInputService:GetFocusedTextBox() and Hub.matchesKeybind("BlobSeatKey", input, "B") and _G.AutoSitBlobZ then
+        task.spawn(function() autoblob() end)
+    end
 end)
 
 -- Blob Fly System
-local blobMasterSwitch = true
-local blobFlyActive = false
-local blobFlySpeed = 50
-local bvInstance, bgInstance
-
-Hub.connect(UserInputService.InputBegan, function(input, gameProcessed)
-	if not gameProcessed and input.KeyCode == Enum.KeyCode.R then
-		if blobMasterSwitch then
-			blobFlyActive = not blobFlyActive
-			if not blobFlyActive then
-				if bvInstance then bvInstance:Destroy() bvInstance = nil end
-				if bgInstance then bgInstance:Destroy() bgInstance = nil end
-			end
-		end
-	end
-end)
-
-local function GetBlobRoot()
-	local char = Player.Character
-	local hum = char and char:FindFirstChild("Humanoid")
-
-	if hum and hum.SeatPart and hum.SeatPart.Parent and hum.SeatPart.Parent.Name == "CreatureBlobman" then
-		return hum.SeatPart.Parent:FindFirstChild("HumanoidRootPart") or hum.SeatPart.Parent.PrimaryPart
-	end
-
-	local folder = workspace:FindFirstChild(Player.Name .. "SpawnedInToys")
-	if folder then
-		local blob = folder:FindFirstChild("CreatureBlobman")
-		if blob then
-			return blob:FindFirstChild("HumanoidRootPart") or blob.PrimaryPart
-		end
-	end
-
-	return nil
+do
+    local activeRoot, activeCharacter, velocity, gyro
+    local speed, currentVelocity = 50, Vector3.zero
+    local status = BlobGroup:AddLabel("Blob Fly: sit in a Blobman, then press R.")
+    local function discard(object)
+        if not object then return end
+        Hub.instances[object], Hub.assetTargets[object] = nil, nil
+        pcall(function() object:Destroy() end)
+    end
+    local function stop()
+        discard(velocity); discard(gyro)
+        velocity, gyro, activeRoot, activeCharacter = nil, nil, nil, nil
+        currentVelocity = Vector3.zero
+        Hub.blobFlightActive = false
+        status:SetText("Blob Fly off. Sit in a Blobman and use your flight shortcut to start.")
+    end
+    Hub.stopBlobFlight = stop
+    local function seatedRoot()
+        local char = Player.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local seat = hum and hum.SeatPart
+        local blob = seat and seat.Parent
+        if not hum or hum.Health <= 0 or not seat or seat.Occupant ~= hum
+            or not blob or blob.Name ~= "CreatureBlobman" then return end
+        local root = blob:FindFirstChild("HumanoidRootPart") or blob.PrimaryPart or seat.AssemblyRootPart
+        if not root or not root:IsA("BasePart") or not root.Parent or root.Anchored then return end
+        return root, char
+    end
+    function Hub.setBlobFlight(on)
+        if not on then stop(); return true end
+        local root, char = seatedRoot()
+        if not root then
+            stop(); status:SetText("Sit in a live, unanchored Blobman before starting flight."); return false
+        end
+        stop()
+        activeRoot, activeCharacter = root, char
+        velocity = Hub.new("BodyVelocity", root)
+        velocity.Name = "BlobFlyVelocity"
+        velocity.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+        velocity.P = 10000
+        velocity.Velocity = Vector3.zero
+        gyro = Hub.new("BodyGyro", root)
+        gyro.Name = "BlobFlyGyro"
+        gyro.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+        gyro.P, gyro.D = 10000, 1000
+        gyro.CFrame = root.CFrame
+        Hub.blobFlightActive = true
+        -- Seating normally grants ownership; make one request on activation, never every frame.
+        if setNetworkOwnerEvent then pcall(function() Hub.fire(setNetworkOwnerEvent, root, root.CFrame) end) end
+        status:SetText("Blob Fly on: WASD, Space up, Left Control down. Flight shortcut stops.")
+        return true
+    end
+    local function finite(vector)
+        return vector.X == vector.X and vector.Y == vector.Y and vector.Z == vector.Z
+            and math.abs(vector.X) < math.huge and math.abs(vector.Y) < math.huge and math.abs(vector.Z) < math.huge
+    end
+    function Hub.updateBlobFlight(dt)
+        if not Hub.blobFlightActive then return end
+        local root, char = seatedRoot()
+        if root ~= activeRoot or char ~= activeCharacter or not velocity.Parent or not gyro.Parent then stop(); return end
+        local camera = Workspace.CurrentCamera
+        if not camera or not finite(camera.CFrame.LookVector) or not finite(camera.CFrame.RightVector) then
+            currentVelocity = Vector3.zero; velocity.Velocity = Vector3.zero; return
+        end
+        local look, right = camera.CFrame.LookVector, camera.CFrame.RightVector
+        local move = Vector3.zero
+        if not UserInputService:GetFocusedTextBox() and not Hub.keybindCaptureActive then
+            if UserInputService:IsKeyDown(Enum.KeyCode.W) then move += look end
+            if UserInputService:IsKeyDown(Enum.KeyCode.S) then move -= look end
+            if UserInputService:IsKeyDown(Enum.KeyCode.A) then move -= right end
+            if UserInputService:IsKeyDown(Enum.KeyCode.D) then move += right end
+            if UserInputService:IsKeyDown(Enum.KeyCode.Space) then move += Vector3.new(0, 1, 0) end
+            if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then move -= Vector3.new(0, 1, 0) end
+        end
+        if move.Magnitude > 1 then move = move.Unit end
+        local seconds = type(dt) == "number" and dt == dt and math.clamp(dt, 0, 0.1) or 1 / 60
+        local alpha = 1 - math.exp(-14 * seconds)
+        currentVelocity += (move * speed - currentVelocity) * alpha
+        velocity.Velocity = currentVelocity
+        -- Camera pitch controls travel direction, but only yaw steers the blob's body.
+        local heading = Vector3.new(look.X, 0, look.Z)
+        if heading.Magnitude > 0.001 then
+            gyro.CFrame = CFrame.lookAt(root.Position, root.Position + heading.Unit, Vector3.yAxis)
+        end
+    end
+    Hub.connect(UserInputService.InputBegan, function(input, processed)
+        if not processed and not UserInputService:GetFocusedTextBox() and Hub.matchesKeybind("BlobFlyKey", input, "R") then
+            Hub.setBlobFlight(not Hub.blobFlightActive)
+        end
+    end)
+    Hub.connect(RunService.PreSimulation or RunService.Heartbeat, Hub.updateBlobFlight)
+    Hub.connect(Player.CharacterRemoving, stop)
+    BlobGroup:AddSlider("BlobFlySpeed", {Text = "Blob Fly speed", Default = 50, Min = 10, Max = 150, Rounding = 0,
+        Callback = function(value) speed = value end})
+    BlobGroup:AddButton({Text = "Start Blob Fly", Func = function() Hub.setBlobFlight(true) end})
+    BlobGroup:AddButton({Text = "Stop Blob Fly", Func = stop})
+    Hub.cleanup(function()
+        stop()
+        Hub.stopBlobFlight, Hub.setBlobFlight, Hub.updateBlobFlight = nil, nil, nil
+    end)
 end
-
-Hub.connect(RunService.Heartbeat, function()
-	if not blobFlyActive or not blobMasterSwitch then 
-		if bvInstance then bvInstance:Destroy() bvInstance = nil end
-		if bgInstance then bgInstance:Destroy() bgInstance = nil end
-		return 
-	end
-
-	local root = GetBlobRoot()
-	if root then
-		if not root:FindFirstChild("BlobFlyVelocity") then
-			bvInstance = Hub.new("BodyVelocity")
-			bvInstance.Name = "BlobFlyVelocity"
-			bvInstance.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
-			bvInstance.P = 10000
-			bvInstance.Parent = root
-		else
-			bvInstance = root.BlobFlyVelocity
-		end
-
-		if not root:FindFirstChild("BlobFlyGyro") then
-			bgInstance = Hub.new("BodyGyro")
-			bgInstance.Name = "BlobFlyGyro"
-			bgInstance.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
-			bgInstance.P = 20000
-			bgInstance.D = 100
-			bgInstance.Parent = root
-		else
-			bgInstance = root.BlobFlyGyro
-		end
-
-		local cam = workspace.CurrentCamera
-		local moveDir = Vector3.zero
-
-		if UserInputService:IsKeyDown(Enum.KeyCode.W) then moveDir = moveDir + cam.CFrame.LookVector end
-		if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveDir = moveDir - cam.CFrame.LookVector end
-		if UserInputService:IsKeyDown(Enum.KeyCode.A) then moveDir = moveDir - cam.CFrame.RightVector end
-		if UserInputService:IsKeyDown(Enum.KeyCode.D) then moveDir = moveDir + cam.CFrame.RightVector end
-		if UserInputService:IsKeyDown(Enum.KeyCode.Space) then moveDir = moveDir + Vector3.new(0, 1, 0) end
-		if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then moveDir = moveDir - Vector3.new(0, 1, 0) end
-
-		if bvInstance then 
-			bvInstance.Velocity = moveDir * blobFlySpeed 
-		end
-
-		if bgInstance then 
-			bgInstance.CFrame = cam.CFrame 
-		end
-	else
-		if bvInstance then bvInstance:Destroy() bvInstance = nil end
-		if bgInstance then bgInstance:Destroy() bgInstance = nil end
-	end
-end)
+-- End Blob Fly System
 
 -- Destroy Target Gucci
 local DestroyTargetGucciActive = false
@@ -5242,6 +5615,7 @@ TargetGroup:AddToggle("DestroyTargetGucci", {
 	Text = "Destroy Gucci (sit)",
 	Default = false,
 	Callback = function(Value)
+        local running, ownsRun = Hub.beginTargetLoop("DestroyTargetGucci", Value)
 		DestroyTargetGucciActive = Value
 
 		if Value then
@@ -5262,13 +5636,10 @@ TargetGroup:AddToggle("DestroyTargetGucci", {
 			notify("System", "Awaiting folder " .. folderName, 3)
 
 			task.spawn(function()
-				while DestroyTargetGucciActive do
-					if not Hub.canHarm(SelectedPlayer) then
-						notify("System", "Player left", 3)
-						DestroyTargetGucciActive = false
-						Toggles.DestroyTargetGucci:SetValue(false)
-						break
-					end
+				while running() do
+                    local target = Hub.nextLoopTarget("destroyGucci")
+                    if not target then task.wait(0.2); continue end
+                    local folderName = target.Name .. "SpawnedInToys"
 
 					local toysFolder = workspace:FindFirstChild(folderName)
 
@@ -5278,7 +5649,7 @@ TargetGroup:AddToggle("DestroyTargetGucci", {
 						local foundBlob = false
 
 						for _, obj in ipairs(toysFolder:GetChildren()) do
-							if not DestroyTargetGucciActive or not Hub.canAffect(toysFolder) then break end
+							if not running() or not Hub.canAffect(toysFolder) then break end
 
 							if obj.Name == "CreatureBlobman" then
 								foundBlob = true
@@ -5307,7 +5678,7 @@ TargetGroup:AddToggle("DestroyTargetGucci", {
 
 											local sitStart = tick()
 											while tick() - sitStart < 1 do
-												if not DestroyTargetGucciActive or not Hub.canAffect(toysFolder) then break end
+												if not running() or not Hub.canAffect(toysFolder) then break end
 												if myHum.SeatPart == seat then break end
 
 												if Hub.canAffect(seat) then seat:Sit(myHum) end
@@ -5317,7 +5688,7 @@ TargetGroup:AddToggle("DestroyTargetGucci", {
 											if magnetConnection then magnetConnection:Disconnect() end
 
 											if myHum.SeatPart == seat then
-												task.wait(0.3) 
+												task.wait(0.3)
 												myHum.Sit = false
 												myHum.Jump = true
 
@@ -5352,17 +5723,12 @@ TargetGroup:AddButton({
 	Func = function()
 		if not Hub.canHarm(SelectedPlayer) then return end
 
-		local char = Player.Character
-		local hum = char and char:FindFirstChild("Humanoid")
-		local seat = hum and hum.SeatPart
-
-		if spawnedInToysFolder and spawnedInToysFolder:FindFirstChild("CreatureBlob") then
-			notify("No blob found!","Spawning blob!")
-		else
-			autoblob()
-		end
-
-		if not seat or seat.Parent.Name ~= "CreatureBlobman" then return end
+        if not autoblob() then
+            notify("Bring", "Could not sit in a ready Blobman; try again after it loads", 3)
+            return
+        end
+        local seat = Hub.getBlobSeat()
+        if not seat then return end
 
 		local blob = seat.Parent
 		local blobRoot = blob:FindFirstChild("HumanoidRootPart")
@@ -5425,6 +5791,7 @@ freezecampart.CanCollide = false
 freezecampart.Transparency = 1
 freezecampart.CanQuery = false
 freezecampart.Size = Vector3.new()
+
 function FreezeCam(freezeCamCFrame)
 	freezecampart.CFrame = freezeCamCFrame
 	workspace.CurrentCamera.CameraType = Enum.CameraType.Follow
@@ -5448,31 +5815,74 @@ function CreateBringBody(targetPart, destinationPart)
 	end
 end
 
-function TeleportPlayer(cframeOffset, teleportPriority)
-	if (teleportPriority == nil and 0 or teleportPriority) == _G.TP_Priority then
-		local playerCharacter = GetPlayerCharacter()
-		if playerCharacter and (not _G.TeleportingToNetworkOwnership and typeof(cframeOffset) == "CFrame") then
-			local humanoidRootPart = playerCharacter.HumanoidRootPart
-			local humanoid = playerCharacter:FindFirstChildOfClass("Humanoid")
-			humanoidRootPart.CFrame = humanoidRootPart.CFrame.Rotation + cframeOffset.Position
-			if humanoid.SeatPart == nil or tostring(humanoid.SeatPart.Parent) ~= "CreatureBlobman" then
-				humanoid.Sit = false
-			end
+function TeleportPlayer(cframeOffset,teleportPriority)
+    local requested=teleportPriority==nil and 0 or teleportPriority
+    local active=_G.TP_Priority==nil and 0 or _G.TP_Priority
+    if requested~=active or _G.TeleportingToNetworkOwnership or typeof(cframeOffset)~="CFrame" then return false end
+    local char=GetPlayerCharacter()
+    local root=char and char:FindFirstChild("HumanoidRootPart")
+    local hum=char and char:FindFirstChildOfClass("Humanoid")
+    if not root or not hum or hum.Health<=0 then return false end
+    root.CFrame=root.CFrame.Rotation+cframeOffset.Position
+    if not hum.SeatPart or not hum.SeatPart.Parent or hum.SeatPart.Parent.Name~="CreatureBlobman" then hum.Sit=false end
+    return true
+end
+
+
+function CheckPlayerVelocity(player)
+    if typeof(player)~="Instance" or not player:IsA("Player") then return math.huge end
+    local char=player.Character
+    local root=char and char:FindFirstChild("HumanoidRootPart")
+    return root and root.AssemblyLinearVelocity.Magnitude or math.huge
+end
+function CheckPlayer(player)
+    if not Hub.canHarm(player) then return false end
+    local char=player.Character
+    local hum=char and char:FindFirstChildOfClass("Humanoid")
+    return char~=nil and char:IsDescendantOf(workspaceService) and char:FindFirstChild("HumanoidRootPart")~=nil
+        and hum~=nil and hum.Health>0
+end
+function CheckPlayerBring(player)
+    if not CheckPlayer(player) then return false end
+    local inPlot=player:FindFirstChild("InPlot")
+    return not (inPlot and inPlot.Value==true) and CheckPlayerVelocity(player)<20
+end
+function CheckNetworkOwnerShipOnPart(potentialPart, condition)
+	if typeof(potentialPart) == "Instance" and (potentialPart:FindFirstChild("PartOwner") and potentialPart.PartOwner.Value == LocalPlayer.Name) then
+		return not condition and true or potentialPart.PartOwner
+	end
+end
+function SNOWshipOnce(targetPart2)
+	local distanceFromCharacter = LocalPlayer:DistanceFromCharacter(targetPart2.Position)
+	if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+		if CheckNetworkOwnerShipOnPart(targetPart2) then
+			return true
+		end
+		if distanceFromCharacter <= 30 then
+			setNetworkOwnerEvent:FireServer(targetPart2, lookAt(LocalPlayer.Character.HumanoidRootPart.Position, targetPart2.Position))
 		end
 	end
 end
 
-TargetGroup:AddButton({
-	Text = "Bring All (grab)",
-	Func = function()
+-- Anti Anti-Kick
+local BringAll = false
+TargetGroup:AddToggle("BringAllGrab", {
+	Text = "Bring All",
+	Default = false,
+	Callback = function(Value)
+		BringAll = Value
+		Hub.bringAllEpoch=(Hub.bringAllEpoch or 0)+1
+		local ticket=Hub.bringAllEpoch
+		local skipped={}
 		task.spawn(function()
-
+		if BringAll and ticket==Hub.bringAllEpoch then
 			local playerCFrame = GetPlayerCFrame()
+			if not playerCFrame or not workspaceService.CurrentCamera then return end
 			local cameraCFrame = CFrame.lookAt(workspaceService.CurrentCamera.CFrame.Position + Vector3.new(- 15, 15, 0), playerCFrame.Position)
 			workspace.CurrentCamera.CFrame = cameraCFrame
-			while _G.BringAll do
+			while BringAll and Hub.alive and ticket==Hub.bringAllEpoch do
 				FreezeCam(cameraCFrame)
-				local playersService = Players
+				local playersService = game:GetService("Players")
 				local playerIterator, playerIterator5, playerIndex = pairs(playersService:GetPlayers())
 				while true do
 					local player
@@ -5480,7 +5890,11 @@ TargetGroup:AddButton({
 					if playerIndex == nil then
 						break
 					end
+					local previous=skipped[player]
+					if not previous or previous.character~=player.Character or os.clock()>=previous.untilTime then
+					local ok,playerError=xpcall(function()
 					if CheckPlayerBring(player) then
+						local boundCharacter=player.Character
 						local humanoidRootPart = player.Character:FindFirstChild("HumanoidRootPart")
 						local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
 						local isRagdolled
@@ -5491,10 +5905,12 @@ TargetGroup:AddButton({
 						end
 						if player and (humanoidRootPart and (humanoid and isRagdolled)) then
 							for _ = 0, 50 do
-								if not _G.BringAll then
+								if not BringAll or not Hub.alive or ticket~=Hub.bringAllEpoch or player.Character~=boundCharacter
+									or not CheckPlayer(player) or humanoidRootPart.Parent~=boundCharacter or humanoid.Parent~=boundCharacter then
 									break
 								end
-								SNOWship(humanoidRootPart)
+
+								SNOWshipOnce(humanoidRootPart)
 								if CheckNetworkOwnerShipOnPlayer(player) then
 									if not isRagdolled.Value and player:DistanceFromCharacter(playerCFrame.Position) > 10 then
 										humanoidRootPart.CFrame = playerCFrame
@@ -5503,6 +5919,7 @@ TargetGroup:AddButton({
 									break
 								end
 								task.wait()
+								if not BringAll or ticket~=Hub.bringAllEpoch or player.Character~=boundCharacter or not humanoidRootPart.Parent then break end
 								if humanoidRootPart.Position.Y <= - 12 then
 									TeleportPlayer(CFrame.new(humanoidRootPart.Position + Vector3.new(0, 5, - 15)))
 								else
@@ -5511,106 +5928,82 @@ TargetGroup:AddButton({
 							end
 						end
 					end
+					end,debug.traceback)
+					if not ok then
+						skipped[player]={character=player.Character,untilTime=os.clock()+10}
+						warn("[Arriva Bring All] Skipping " .. player.Name .. " for 10 seconds: " .. tostring(playerError))
+					end
+					end
 				end
 				TeleportPlayer(CFrame.new(527, 123, - 376))
 				task.wait()
 			end
+			if ticket==Hub.bringAllEpoch then unFreezeCam();TeleportPlayer(playerCFrame) end
+		elseif ticket==Hub.bringAllEpoch then
 			unFreezeCam()
-			TeleportPlayer(playerCFrame)
-
+		end
 		end)
 	end
+
 })
 
-TargetGroup:AddButton({
-	Text = "Bring (grab)",
-	Func = function()
-		task.spawn(function()
-			local target = SelectedPlayer
-			if not target then return end
-
-			local inPlot = target:FindFirstChild("InPlot")
-			if inPlot and inPlot.Value == true then
-				return
-			end
-
-			local RS = ReplicatedStorage
-			local RunService = game:GetService("RunService")
-			local GE = RS:WaitForChild("GrabEvents")
-
-			local myChar = Player.Character
-			local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
-			if not myRoot then return end
-
-			local tChar = Hub.canHarm(target) and target.Character or nil
-			local tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")
-			local tHum = tChar and tChar:FindFirstChild("Humanoid")
-			if not (tRoot and tHum and tHum.Health > 0) then return end
-
-			local savedPos = myRoot.CFrame
-			local dragging = false
-			local grabStartTime = 0
-
-			local start = tick()
-			while Hub.canHarm(target) and tRoot.Parent and tHum.Health > 0 and tick() - start < 0.9 do
-				if Hub.canAffect(tRoot) then tRoot.AssemblyLinearVelocity = Vector3.zero end
-				if Hub.canAffect(tRoot) then tRoot.AssemblyAngularVelocity = Vector3.zero end
-				if Hub.canAffect(tRoot) then tRoot.Velocity = Vector3.zero end
-
-				if not dragging then
-					if Hub.canAffect(tRoot) then myRoot.CFrame = tRoot.CFrame end
-					myRoot.Velocity = Vector3.zero
-
-					pcall(function()
-						if Hub.canAffect(tHum) then tHum.PlatformStand = true end
-						if Hub.canAffect(tHum) then tHum.Sit = true end
-						Hub.fire(GE.SetNetworkOwner, tRoot, CFrame.new(myRoot.Position, tRoot.Position))
-						Hub.fire(GE.CreateGrabLine, tRoot, Vector3.zero, tRoot.Position, false)
-					end)
-
-					if grabStartTime == 0 then
-						grabStartTime = tick()
-					end
-
-					if tick() - grabStartTime > 0.35 then
-						dragging = true
-						grabStartTime = 0
-					end
-				else
-					myRoot.CFrame = savedPos
-					myRoot.Velocity = Vector3.zero
-
-					local lockPos = savedPos * CFrame.new(0, 17, 0)
-
-					if Hub.canAffect(tRoot) then tRoot.CFrame = lockPos end
-					if Hub.canAffect(tRoot) then tRoot.Velocity = Vector3.zero end
-					if Hub.canAffect(tRoot) then tRoot.RotVelocity = Vector3.zero end
-
-					if Hub.canAffect(tHum) then tHum.PlatformStand = true end
-					if Hub.canAffect(tHum) then tHum.Sit = false end
-
-					pcall(function()
-						Hub.fire(GE.SetNetworkOwner, tRoot, lockPos)
-						Hub.fire(GE.CreateGrabLine, tRoot, Vector3.zero, tRoot.Position, false)
-					end)
-				end
-
-				RunService.Heartbeat:Wait()
-			end
-
-			pcall(function()
-				if Hub.canAffect(tHum) then tHum.PlatformStand = false end
-				if Hub.canAffect(tHum) then tHum.Sit = false end
-				Hub.fire(GE.DestroyGrabLine, tRoot)
-			end)
-
-			if myRoot then
-				myRoot.CFrame = savedPos
-				myRoot.Velocity = Vector3.zero
-			end
-		end)
-	end
-})
+-- Selected-player version of Bring All, with bounded retries and cleanup.
+do
+(function()
+    TargetGroup:AddButton({Text="Bring (grab)",Func=function()
+        if BringAll or Hub.singleBringBusy then notify("Bring","Stop Bring All or wait for the current bring to finish.",4);return end
+        if Hub.safeZoneLoopActive then notify("Bring","Turn off Loop go to safe zone before bringing a player.",4);return end
+        local target=SelectedPlayer
+        if not CheckPlayerBring(target) then notify("Bring","Selected player is protected, in a plot, moving too quickly or not ready.",5);return end
+        local myChar=Player.Character
+        local myRoot=myChar and myChar:FindFirstChild("HumanoidRootPart")
+        local myHum=myChar and myChar:FindFirstChildOfClass("Humanoid")
+        local targetChar=target.Character
+        local root=targetChar:FindFirstChild("HumanoidRootPart")
+        local hum=targetChar:FindFirstChildOfClass("Humanoid")
+        local ragdolled=hum and hum:FindFirstChild("Ragdolled")
+        if not myRoot or not myHum or myHum.Health<=0 or not root or not ragdolled then notify("Bring","Character parts or Ragdolled value are not ready.",4);return end
+        Hub.singleBringBusy=true
+        task.spawn(function()
+            local saved=myRoot.CFrame
+            local camera=Workspace.CurrentCamera
+            local cameraState=camera and {kind=camera.CameraType,subject=camera.CameraSubject,cf=camera.CFrame}
+            local success=false
+            local function current()
+                return Hub.alive and not BringAll and not Hub.safeZoneLoopActive and Player.Character==myChar and myRoot.Parent==myChar and myHum.Health>0
+                    and target.Character==targetChar and root.Parent==targetChar and hum.Parent==targetChar and hum.Health>0 and Hub.canHarm(target)
+            end
+            local ok,err=xpcall(function()
+                if camera then FreezeCam(CFrame.lookAt(camera.CFrame.Position+Vector3.new(-15,15,0),saved.Position)) end
+                for _=1,51 do
+                    if not current() then break end
+                    local plot=target:FindFirstChild("InPlot")
+                    if plot and plot.Value then break end
+                    SNOWshipOnce(root)
+                    if CheckNetworkOwnerShipOnPlayer(target) then
+                        if not ragdolled.Value and target:DistanceFromCharacter(saved.Position)>10 then root.CFrame=saved end
+                        CreateBringBody(root,saved)
+                        success=true;break
+                    end
+                    task.wait()
+                    if not current() then break end
+                    TeleportPlayer(CFrame.new(root.Position+Vector3.new(0,root.Position.Y<=-12 and 5 or -10,root.Position.Y<=-12 and -15 or -10)))
+                end
+            end,debug.traceback)
+            if Player.Character==myChar and myRoot.Parent==myChar and myHum.Health>0 and not Hub.safeZoneLoopActive then
+                pcall(function() myRoot.CFrame=saved;myRoot.AssemblyLinearVelocity=Vector3.zero;myRoot.AssemblyAngularVelocity=Vector3.zero end)
+            end
+            if camera and cameraState and Workspace.CurrentCamera==camera then pcall(function()
+                camera.CameraType=cameraState.kind;camera.CameraSubject=cameraState.subject;camera.CFrame=cameraState.cf
+            end) end
+            Hub.singleBringBusy=false
+            if not ok then warn("[Arriva Bring selected] " .. tostring(err));notify("Bring","Bring stopped after an error, your position was restored where possible.",5)
+            elseif success then notify("Bring",target.Name .. " brought to your starting position.",4)
+            else notify("Bring","Target changed or ownership was not confirmed before retries ended.",5) end
+        end)
+    end})
+end)()
+end
 
 -- Anti Anti-Kick
 local antiAntiKickActive = false
@@ -5618,6 +6011,7 @@ TargetGroup:AddToggle("DestroyAntiKickToggle", {
 	Text = "Grab Anti Kick",
 	Default = false,
 	Callback = function(Value)
+        local running, ownsRun = Hub.beginTargetLoop("DestroyAntiKickToggle", Value)
 		antiAntiKickActive = Value
 
 		if Value then
@@ -5639,8 +6033,9 @@ TargetGroup:AddToggle("DestroyAntiKickToggle", {
 					end
 				end
 
-				while antiAntiKickActive do
-					local target = SelectedPlayer
+				while running() do
+                    local target = Hub.nextLoopTarget("antiKick")
+                    if not target then task.wait(0.2); continue end
 					if Hub.canHarm(target) then
 						local spawned = workspace:FindFirstChild(target.Name.."SpawnedInToys")
 						if spawned then
@@ -5838,19 +6233,14 @@ TargetNotificationGroup:AddToggle("JoinedNotifyBtn", {
 
 				if Hub.isProtected(newPlayer) then detected = true; reason = "[Protected]" end
 
-				if not detected and Options.KickPlayerDropdown and Options.KickPlayerDropdown.Value then
-					local selection = Options.KickPlayerDropdown.Value
-					local selectedName = selection:match("%((.-)%)")
-
-					if selectedName and selectedName == newPlayer.Name then
-						detected = true
-						reason = "[Main Target]"
-					end
-				end
+                if not detected and Hub.isSelectedTarget(newPlayer) then
+                    detected = true
+                    reason = "[Main Target]"
+                end
 
 				if detected then
 					notify("Target Returned!" .. reason .. " | Player: " .. newPlayer.Name, 8)
-					if Hub.canHarm(newPlayer) then SelectedPlayer = newPlayer end
+					if Hub.isSelectedTarget(newPlayer) and Hub.canHarm(newPlayer) then SelectedPlayer = SelectedPlayer or newPlayer end
 					local sound = Hub.new("Sound", workspace)
 					sound.SoundId = "rbxassetid://4590662766"
 					sound.Volume = 2
@@ -5867,13 +6257,14 @@ TargetNotificationGroup:AddToggle("JoinedNotifyBtn", {
 
 local respawnNotifyActive = false
 local respawnConnections = {}
+Hub.connect(Players.PlayerRemoving,function(player)
+    local c=respawnConnections[player]
+    if c then c:Disconnect();Hub.connections[c]=nil;respawnConnections[player]=nil end
+end)
 
 local function isTrackedPlayer(player)
 	if Hub.isProtected(player) then return true, "[Protected]" end
-	if Options.KickPlayerDropdown and Options.KickPlayerDropdown.Value then
-		local name = Options.KickPlayerDropdown.Value:match("%((.-)%)")
-		if name == player.Name then return true, "[Main Target]" end
-	end
+    if Hub.isSelectedTarget(player) then return true, "[Main Target]" end
 	return false, nil
 end
 
@@ -5887,7 +6278,7 @@ local function trackRespawn(player)
 		if not tracked then return end
 
 		notify("Target respawned", player.Name .. " has respawned. " .. reason, 8)
-		if Hub.canHarm(player) then SelectedPlayer = player end
+		if Hub.isSelectedTarget(player) and Hub.canHarm(player) then SelectedPlayer = SelectedPlayer or player end
 
 		local sound = Hub.new("Sound")
 		sound.SoundId = "rbxassetid://4590662766"
@@ -5916,7 +6307,8 @@ TargetNotificationGroup:AddToggle("RespawnNotifyBtn", {
 			end
 
 			-- Hook new players too
-			respawnConnections["_PlayerAdded"] = Hub.connect(Players.PlayerAdded, function(plr)
+			if respawnConnections["_PlayerAdded"] then respawnConnections["_PlayerAdded"]:Disconnect();Hub.connections[respawnConnections["_PlayerAdded"]]=nil end
+            respawnConnections["_PlayerAdded"] = Hub.connect(Players.PlayerAdded, function(plr)
 				trackRespawn(plr)
 			end)
 		else
@@ -6462,30 +6854,236 @@ Hub.cleanup(function() StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList,
 local mouse = Player:GetMouse()
 local tpToolConn
 
--- Click TP
-MiscGroup:AddToggle("TPToggle", {
-	Text = "Click TP (Z)",
-	Default = false,
-	Callback = function(Value)
-		if Value then
-			if tpToolConn then tpToolConn:Disconnect() end
-			tpToolConn = Hub.connect(UserInputService.InputBegan, function(input, gameProcessed)
-				if gameProcessed then return end
-				if input.KeyCode == Enum.KeyCode.Z then
-					local character = Player.Character
-					if character and character:FindFirstChild("HumanoidRootPart") then
-						local hrp = character.HumanoidRootPart
-						local targetPos = mouse.Hit.Position
-						hrp.Velocity = Vector3.zero
-						hrp.CFrame = CFrame.new(targetPos + Vector3.new(0,3,0))
+-- One-shot missile throw adapted from the reference's M shortcut; V is the default here.
+do
+(function()
+    local group = Hub.keybindGroups.missiles
+    local enabled, generation = true, 0
+    local pending, forces, referenceConnections = {}, {}, {}
+    Hub.missileLaunchClaims = {}
+    local status = group:AddLabel("Reference actions: Throw Bomb, Explode Bomb, Explode Firework.")
+    local function disconnect(connection)
+        if connection then connection:Disconnect(); Hub.connections[connection] = nil end
+    end
+    local function release(force)
+        local root = forces[force]
+        if not root then return end
+        forces[force] = nil
+        if Hub.missileLaunchClaims[root] == force then Hub.missileLaunchClaims[root] = nil end
+        Hub.instances[force], Hub.assetTargets[force] = nil, nil
+        pcall(function() force:Destroy() end)
+    end
+    local function cancel()
+        generation += 1
+        for _, connection in ipairs(referenceConnections) do disconnect(connection) end
+        table.clear(referenceConnections)
+        for operation, connection in pairs(pending) do disconnect(connection); pending[operation] = nil end
+        local list = {}
+        for force in pairs(forces) do table.insert(list, force) end
+        for _, force in ipairs(list) do release(force) end
+        status:SetText("Pending missile actions cancelled; launch forces released.")
+    end
+    local function ownedStatus(name)
+        local node = Player:FindFirstChildOfClass("PlayerGui")
+        for _, childName in ipairs({"MenuGui", "Menu", "TabContents", "Toys", "Contents"}) do
+            node = node and node:FindFirstChild(childName)
+        end
+        return not node or node:FindFirstChild(name) ~= nil
+    end
+    local function run(name, explode)
+        if not Hub.alive or not enabled or Hub.keybindCaptureActive or UserInputService:GetFocusedTextBox() then return false end
+        local char = Player.Character
+        local head = char and char:FindFirstChild("Head")
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if not root or not hum or hum.Health <= 0 or not ownedStatus(name) then
+            status:SetText("Character unavailable or toy not owned: " .. name); return false
+        end
+        local menu = ReplicatedStorage:FindFirstChild("MenuToys")
+        local spawn = menu and menu:FindFirstChild("SpawnToyRemoteFunction")
+        local grabs = ReplicatedStorage:FindFirstChild("GrabEvents")
+        local owner = grabs and grabs:FindFirstChild("SetNetworkOwner")
+        local folder = Workspace:FindFirstChild(Player.Name .. "SpawnedInToys")
+        local events = ReplicatedStorage:FindFirstChild("BombEvents")
+        local explosion = events and events:FindFirstChild("BombExplode")
+        if not spawn or not owner or not folder or (explode and not explosion) then
+            status:SetText("Missile remotes or toy folder are not ready."); return false
+        end
+        local operation = name .. (explode and ":explode" or ":throw")
+        if pending[operation] then status:SetText("That missile action is already waiting for its toy."); return false end
+        local ticket, accepted = generation, false
+        local function current()
+            return Hub.alive and enabled and ticket == generation and Player.Character == char and hum.Health > 0
+        end
+        local function finish()
+            disconnect(pending[operation]); pending[operation] = nil
+        end
+        -- Same order as the supplied callbacks: subscribe FIRST, then spawn asynchronously.
+        pending[operation] = Hub.connect(folder.ChildAdded, function(child)
+            if accepted or not current() or child.Name ~= name then return end
+            local number = child:WaitForChild("ThisToysNumber", 1)
+            local counter = folder:FindFirstChild("ToyNumber")
+            if not number or not counter or number.Value ~= counter.Value - 1 or accepted or not current() then return end
+            accepted = true
+            finish()
+            local hit = child:WaitForChild("PartHitDetector", 1)
+            if not hit or not hit:IsA("BasePart") or child.Parent ~= folder or not current() then return end
+            Hub.fire(owner, hit, hit.CFrame)
+            if explode then
+                local body = child:WaitForChild("Body", 1)
+                if not body or not body:IsA("BasePart") or not current() then return end
+                Hub.fire(explosion, {
+                    Radius = 17.5, TimeLength = 2, Hitbox = hit,
+                    ExplodesByFire = false, MaxForcePerStudSquared = 225,
+                    Model = child, ImpactSpeed = 100, ExplodesByPointy = false,
+                    DestroysModel = false, PositionPart = body,
+                }, body.Position)
+                status:SetText("Requested " .. name .. " explosion (reference action).")
+            else
+                local camera = Workspace.CurrentCamera
+                if not camera then return end
+                local velocityObj = Hub.new("BodyVelocity", hit)
+                forces[velocityObj] = hit.AssemblyRootPart or hit
+                Hub.missileLaunchClaims[forces[velocityObj]] = velocityObj
+                velocityObj.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+                velocityObj.Velocity = camera.CFrame.LookVector * 500
+                Debris:AddItem(velocityObj, 10)
+                task.delay(10, function() release(velocityObj) end)
+                status:SetText("Threw BombMissile at 500 studs/sec (reference action).")
+            end
+        end)
+        -- Reference explosion listeners expire after one second; bound throw listeners too.
+        task.delay(explode and 1 or 5, function()
+            if ticket == generation and not accepted then finish() end
+        end)
+        local spawnCFrame = head and head.CFrame or root.CFrame
+        task.spawn(function()
+            if not current() then return end
+            local ok, err = pcall(function() Hub.invoke(spawn, name, spawnCFrame, Vector3.zero) end)
+            if not ok and current() then finish(); status:SetText("Missile spawn failed: " .. tostring(err)) end
+        end)
+        return true
+    end
+    function Hub.throwMissile()
+        if not Hub.alive or not enabled or Hub.keybindCaptureActive or UserInputService:GetFocusedTextBox() then return false end
+        local localPlayer = Player
+        local playerCharacter = localPlayer.Character
+        local toysFolder = Workspace:FindFirstChild(localPlayer.Name .. "SpawnedInToys")
+        if not playerCharacter or not toysFolder then return false end
+        local workspace = Workspace
+        local SetNetworkOwner = ReplicatedStorage.GrabEvents.SetNetworkOwner
+        local ownedToys = {}
+        local node = localPlayer:FindFirstChildOfClass("PlayerGui")
+        for _, name in ipairs({"MenuGui", "Menu", "TabContents", "Toys", "Contents"}) do node = node and node:FindFirstChild(name) end
+        if node then
+            for _, toy in ipairs(node:GetChildren()) do
+                if toy.Name ~= "UIGridLayout" then ownedToys[toy.Name] = true end
+            end
+        else
+            ownedToys.BombMissile = true -- Let the normal server spawn validate while the menu loads.
+        end
+        local OrionLib = {MakeNotification = function(_, info) status:SetText(info.Content) end}
+        -- BEGIN supplied spawnItemCf (verbatim)
+local function spawnItemCf(itemName, cframe)
+	task.spawn(function()
+		local rotation = Vector3.new(0, 0, 0)
+		ReplicatedStorage.MenuToys.SpawnToyRemoteFunction:InvokeServer(itemName, cframe, rotation)
+	end)
+end
+        -- END supplied spawnItemCf
+        -- BEGIN supplied Throw Bomb callback (only connection bookkeeping added)
+		if not ownedToys["BombMissile"] then
+			OrionLib:MakeNotification({Name = "Missing toy", Content = "You do not own the BombMissile toy. ", Image = "rbxassetid://4483345998", Time = 3})
+			return
+		end
+
+		local connection
+		connection = toysFolder.ChildAdded:Connect(function(child)
+			if child.Name == "BombMissile" then
+				if child:WaitForChild("ThisToysNumber", 1) then
+
+					if child.ThisToysNumber.Value == (toysFolder.ToyNumber.Value - 1) then
+
+						connection:Disconnect()
+
+						SetNetworkOwner:FireServer(child.PartHitDetector, child.PartHitDetector.CFrame)
+						local velocityObj = Instance.new("BodyVelocity", child.PartHitDetector)
+						velocityObj.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+						velocityObj.Velocity = workspace.CurrentCamera.CFrame.lookVector * 500
+						Debris:AddItem(velocityObj, 10)
+                        -- BEGIN hub bookkeeping (no launch changes)
+                        local assembly = child.PartHitDetector.AssemblyRootPart or child.PartHitDetector
+                        forces[velocityObj] = assembly
+                        Hub.missileLaunchClaims[assembly] = velocityObj
+                        Hub.instances[velocityObj] = true
+                        task.delay(10, function() release(velocityObj) end)
+                        -- END hub bookkeeping
 					end
 				end
-			end)
-		else
-			if tpToolConn then tpToolConn:Disconnect() tpToolConn = nil end
-		end
-	end
-})
+			end
+		end)
+        table.insert(referenceConnections, connection)
+        Hub.connections[connection] = true
+		spawnItemCf("BombMissile", playerCharacter.Head.CFrame or playerCharacter.HumanoidRootPart.CFrame)
+        -- END supplied Throw Bomb callback
+        return true
+    end
+    function Hub.explodeMissile(name)
+        if name ~= "BombMissile" and name ~= "FireworkMissile" then return false end
+        return run(name, true)
+    end
+    group:AddLabel("Throw Bomb"):AddKeyPicker("MissileThrowKey", {Default = "V", Text = "Throw Bomb", Callback = Hub.throwMissile})
+    group:AddLabel("Explode Bomb"):AddKeyPicker("ExplodeBombKey", {Default = "J", Text = "Explode Bomb", Callback = function() Hub.explodeMissile("BombMissile") end})
+    group:AddLabel("Explode Firework"):AddKeyPicker("ExplodeFireworkKey", {Default = "N", Text = "Explode Firework", Callback = function() Hub.explodeMissile("FireworkMissile") end})
+    group:AddToggle("MissileThrowEnabled", {Text = "Enable missile actions", Default = true, Callback = function(on) enabled = on; if not on then cancel() end end})
+    group:AddButton({Text = "Throw Bomb", Func = Hub.throwMissile})
+    group:AddButton({Text = "Explode Bomb", Func = function() Hub.explodeMissile("BombMissile") end})
+    group:AddButton({Text = "Explode Firework", Func = function() Hub.explodeMissile("FireworkMissile") end})
+    group:AddButton({Text = "Cancel missile actions", Func = cancel})
+    group:AddLabel("V: throw a new bomb at 500 studs/sec. J: spawn and immediately explode a bomb. N: spawn and immediately explode a firework. These are separate reference actions; no added impact trigger or fuse. Server physics and remote validation still apply.")
+    Hub.connect(Player.CharacterRemoving, cancel)
+    Hub.cleanup(function()
+        enabled = false; cancel()
+        Hub.throwMissile, Hub.explodeMissile = nil, nil
+    end)
+end)()
+end
+-- End missile throw.
+
+-- Click TP requires a finite, solid surface hit, never Mouse.Hit's sky fallback.
+Hub.clickTeleport=function()
+    if Hub.safeZoneLoopActive then return end
+            local char=Player.Character
+            local root=char and char:FindFirstChild("HumanoidRootPart")
+            local hum=char and char:FindFirstChildOfClass("Humanoid")
+            if not root or not hum or hum.Health<=0 then return end
+            local ray=mouse.UnitRay
+            local filter=RaycastParams.new()
+            filter.FilterType=Enum.RaycastFilterType.Exclude
+            filter.FilterDescendantsInstances={char}
+            filter.RespectCanCollide=true
+            filter.IgnoreWater=true
+            local hit=Workspace:Raycast(ray.Origin,ray.Direction*512,filter)
+            if not hit or hit.Normal.Y<0.5 then return end
+            local position=hit.Position
+            for _,value in ipairs({position.X,position.Y,position.Z}) do
+                if value~=value or math.abs(value)==math.huge then return end
+            end
+            if (position-root.Position).Magnitude>512 or position.Y<=Workspace.FallenPartsDestroyHeight+8 then return end
+            local characterOwner=Hub.playerOf(hit.Instance)
+            if characterOwner then return end
+            local clearance=math.max(3,hum.HipHeight+root.Size.Y/2+0.5)
+            root.CFrame=CFrame.new(position+Vector3.new(0,clearance,0))*root.CFrame.Rotation
+            root.AssemblyLinearVelocity=Vector3.zero
+            root.AssemblyAngularVelocity=Vector3.zero
+end
+MiscGroup:AddToggle("TPToggle",{Text="Click TP (Z)",Default=false,Callback=function(on)
+    if tpToolConn then tpToolConn:Disconnect();Hub.connections[tpToolConn]=nil;tpToolConn=nil end
+    if on then tpToolConn=Hub.connect(UserInputService.InputBegan,function(input,processed)
+        if not processed and Hub.matchesKeybind("ClickTeleportKey", input, "Z") and not UserInputService:GetFocusedTextBox() then Hub.clickTeleport() end
+    end) end
+end})
+
 
 MiscGroup:AddToggle("PlayerList", {
 	Text = "Playerlist Visible",
@@ -6534,7 +7132,7 @@ setFreeMouse(Hub.menuVisible ~= false)
 Hub.cleanup(function() Hub.menuMouse = nil; setFreeMouse(false) end)
 Hub.connect(UserInputService.InputBegan, function(input, processed)
 	if processed or UserInputService:GetFocusedTextBox() then return end
-	if input.KeyCode == Enum.KeyCode.F then setFreeMouse(not enabled) end
+	if Hub.matchesKeybind("FreeMouseKey", input, "F") then setFreeMouse(not enabled) end
 end)
 
 -- Water Walk
@@ -6571,7 +7169,7 @@ local Triggerbot = {
 	canGrab = true,
 	maxDistance = 20,
 	preGrabDelay = 0.00001,
-	postGrabDelay = 0.05, 
+	postGrabDelay = 0.05,
 	lastTarget = nil,
 	lastHitTime = 0,
 	targetMemoryDuration = 0.1,
@@ -6633,11 +7231,11 @@ function Triggerbot:OnHeartbeat()
 	self.lastCheck = tick()
 
 	local t = self:GetTarget()
-	if t then 
-		self.lastTarget = t 
+	if t then
+		self.lastTarget = t
 		self.lastHitTime = tick()
-	elseif self.lastTarget and tick() - self.lastHitTime > self.targetMemoryDuration then 
-		self.lastTarget = nil 
+	elseif self.lastTarget and tick() - self.lastHitTime > self.targetMemoryDuration then
+		self.lastTarget = nil
 	end
 
 	local c = Player.Character
@@ -6645,9 +7243,9 @@ function Triggerbot:OnHeartbeat()
 
 	if not (self.lastTarget and c and c:FindFirstChild("HumanoidRootPart") and root) then return end
 
-	if (c.HumanoidRootPart.Position - root.Position).Magnitude > self.maxDistance then 
-		self.lastTarget = nil 
-		return 
+	if (c.HumanoidRootPart.Position - root.Position).Magnitude > self.maxDistance then
+		self.lastTarget = nil
+		return
 	end
 
 	if self.lastTarget and Hub.canAffect(self.lastTarget) then
@@ -6656,8 +7254,8 @@ function Triggerbot:OnHeartbeat()
 			task.wait(self.preGrabDelay)
 			if self.Enabled and self.lastTarget and Hub.canAffect(self.lastTarget) then pcall(mouse1press) end
 			local t0 = tick()
-			repeat 
-				task.wait(0.02) 
+			repeat
+				task.wait(0.02)
 			until not Workspace:FindFirstChild("GrabParts") or tick() - t0 > 1.6
 			task.wait(self.postGrabDelay)
 			self.canGrab = true
@@ -6708,7 +7306,7 @@ MiscGroup:AddToggle("TriggerbotToggle", {
 		if Triggerbot.Enabled and not Triggerbot.Connection then
 			Triggerbot.Connection = Hub.connect(RunService.Heartbeat, function() Triggerbot:OnHeartbeat() end)
 		elseif not Triggerbot.Enabled and Triggerbot.Connection then
-			Triggerbot.Connection:Disconnect() 
+			Triggerbot.Connection:Disconnect()
 			Triggerbot.Connection = nil
 		end
 	end
@@ -6772,12 +7370,12 @@ do
 	end
 
 	local function getBHPosition(obj)
-		if obj:IsA("BasePart") then 
-			return obj.Position 
+		if obj:IsA("BasePart") then
+			return obj.Position
 		end
 		local part = obj:FindFirstChildWhichIsA("BasePart", true)
-		if part then 
-			return part.Position 
+		if part then
+			return part.Position
 		end
 		return nil
 	end
@@ -6831,11 +7429,7 @@ do
 end
 
 -- Anchor Object
-MiscGroup:AddLabel("Anchor Object Bind"):AddKeyPicker("AnchorObjectKey", {
-	Default = "G",
-	Text = "Anchor Object",
-	NoUI = false,
-	Callback = function(value)
+Hub.anchorHeldObject = function(value)
 		if type(value)=="string" then return end -- Rebinding is not an activation.
 		local original = workspace:FindFirstChild("GrabParts")
 		if not original then return end
@@ -6930,6 +7524,7 @@ MiscGroup:AddLabel("Anchor Object Bind"):AddKeyPicker("AnchorObjectKey", {
 		hl.OutlineTransparency = 0.7
 		hl.Adornee = targetModel
 		hl.Parent = targetModel
+		if Hub.styleAnchorHighlight then Hub.styleAnchorHighlight(hl) end
 
 		local destroyConnection
 		destroyConnection=Hub.connect(clone.Destroying,function()
@@ -6937,8 +7532,8 @@ MiscGroup:AddLabel("Anchor Object Bind"):AddKeyPicker("AnchorObjectKey", {
 			if destroyConnection then destroyConnection:Disconnect();Hub.connections[destroyConnection]=nil end
 		end)
 
-	end
-})
+end
+Hub.keybindGroups.actions:AddLabel("Anchor held object"):AddKeyPicker("AnchorObjectKey", {Default="G",Text="Anchor Object",NoUI=false,Callback=Hub.anchorHeldObject})
 
 
 
@@ -7079,13 +7674,13 @@ do
 		Callback = function(on) enabled = on; bind() end,
 	})
 	local players = game:GetService("Players")
-	Hub.connect(players.PlayerAdded, function() dropdown:SetValues(names()) end)
+	Hub.connect(players.PlayerAdded,function() Hub.queueRefresh("spectator",function() dropdown:SetValues(names()) end) end)
 	Hub.connect(players.PlayerRemoving, function(leaving)
 		local values = names()
 		local index = table.find(values, leaving.Name)
 		if index then table.remove(values, index) end
 		if leaving == selected then selected = nil; bind(); dropdown:SetValue(nil) end
-		dropdown:SetValues(values)
+		Hub.queueRefresh("spectator",function() dropdown:SetValues(names()) end)
 	end)
 	Hub.connect(workspace:GetPropertyChangedSignal("CurrentCamera"), function()
 		if enabled and selected then update(selected.Character) end
@@ -7106,7 +7701,27 @@ do
 		local connection,decorationFolder
 		local epoch,phase,elapsed,nextScan=0,0,0,0
 		local status=shapes:AddLabel("Aura is off.")
-		local spawnBatch,cancelSpawn
+        local centerMode,placedCenter="Follow me",nil
+        local function aimedCenter()
+            local char=Player.Character
+            local params=RaycastParams.new();params.FilterType=Enum.RaycastFilterType.Exclude
+            params.FilterDescendantsInstances=decorationFolder and {char,decorationFolder} or {char}
+            params.IgnoreWater=true
+            local ray=mouse.UnitRay;local hit=Workspace:Raycast(ray.Origin,ray.Direction*200,params)
+            if not hit then return nil end
+            local root=char and char:FindFirstChild("HumanoidRootPart")
+            if not root or (hit.Position-root.Position).Magnitude>100 then return nil end
+            return CFrame.new(hit.Position+Vector3.new(0,height,0))*root.CFrame.Rotation
+        end
+        settings:AddDropdown("CreativeAuraCenter",{Text="Formation center",Values={"Follow me","Follow mouse","Click to place"},Default=1,
+            Callback=function(value) centerMode=value;placedCenter=nil end})
+        Hub.connect(UserInputService.InputBegan,function(input,processed)
+            if enabled and centerMode=="Click to place" and not processed and not UserInputService:GetFocusedTextBox()
+                and (input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch) then
+                placedCenter=aimedCenter() or placedCenter
+            end
+        end)
+        local spawnBatch,cancelSpawn
 
 		local function point(name,index,total,rotation)
 			local fraction=(index-1)/math.max(total,1)
@@ -7116,7 +7731,16 @@ do
 					(13*math.cos(angle)-5*math.cos(2*angle)-2*math.cos(3*angle)-math.cos(4*angle))/18,0)
 			elseif name=="Figure Eight" then
 				return Vector3.new(math.sin(angle),math.sin(2*angle)*0.5,0)
-			elseif name=="Helix" then
+			elseif name=="Tornado" then
+                local width=0.2+fraction*0.8
+                return Vector3.new(math.cos(angle*3)*width,(fraction-0.5)*2,math.sin(angle*3)*width)
+            elseif name=="Blackhole" then
+                local width=0.15+fraction*0.85
+                return Vector3.new(math.cos(angle*3)*width,math.sin(angle*3)*width,0)
+            elseif name=="Star" then
+                local width=index%2==0 and 0.45 or 1
+                return Vector3.new(math.cos(angle)*width,math.sin(angle)*width,0)
+            elseif name=="Helix" then
 				return Vector3.new(math.cos(angle),(fraction-0.5)*2,math.sin(angle))
 			end
 			return Vector3.new(math.cos(angle),math.sin(angle),0)
@@ -7153,6 +7777,7 @@ do
 			return char and char:FindFirstChild("HumanoidRootPart")
 		end
 		local function safeAssembly(part,folder)
+            if part and ((Hub.toyBuildClaims and Hub.toyBuildClaims[part.AssemblyRootPart or part]) or (Hub.missileLaunchClaims and Hub.missileLaunchClaims[part.AssemblyRootPart or part])) then return nil end
 			if not part.Parent or part.Anchored or not part:IsDescendantOf(folder) then return nil end
 			local owner=part:FindFirstChild("PartOwner")
 			if owner and (owner:IsA("StringValue") or owner:IsA("ObjectValue")) then
@@ -7253,6 +7878,8 @@ do
 					refreshToys(root)
 				end
 				local center=root.CFrame*CFrame.new(0,height,-distance)
+                if centerMode=="Follow mouse" then center=aimedCenter() or center
+                elseif centerMode=="Click to place" then center=placedCenter or center end
 				for index=#entries,1,-1 do
 					local entry=entries[index]
 					if not entry.part.Parent then release(entry);table.remove(entries,index)
@@ -7275,7 +7902,7 @@ do
 		shapes:AddDropdown("CreativeAuraSource",{Text="Objects to use",Values={"Local decorations","My spawned toys"},Default=1,
 			Callback=function(value) mode=value;start() end})
 		shapes:AddLabel("Toy mode uses only your existing unanchored toys nearby. It skips characters, vehicles, other players' objects and map parts. It does not request network ownership.")
-		settings:AddDropdown("CreativeAuraShape",{Text="Shape",Values={"Heart","Ring","Helix","Figure Eight"},Default=1,
+		settings:AddDropdown("CreativeAuraShape",{Text="Shape",Values={"Heart","Ring","Helix","Figure Eight","Tornado","Blackhole","Star"},Default=1,
 			Callback=function(value) shape=value end})
 		settings:AddSlider("CreativeAuraCount",{Text="Maximum objects",Default=24,Min=8,Max=40,Rounding=0,
 			Callback=function(value) count=value;start() end})
@@ -7321,11 +7948,11 @@ do
 			return nil
 		end
 		local function toyFolder() return Workspace:FindFirstChild(Player.Name .. "SpawnedInToys") end
-		spawnBatch=function(automatic)
+		spawnBatch=function(automatic,requestedAmount)
 			if busy or not Hub.alive then return end
 			if automatic and (not autoSpawn or not enabled or mode~="My spawned toys") then return end
 			local choice=selected
-			local wanted=amount
+			local wanted=requestedAmount or amount
 			if automatic then
 				local existing=0
 				local folder=toyFolder()
@@ -7386,6 +8013,7 @@ do
 			local label=string.format("%s (%d points)",toy.name,toy.points)
 			table.insert(labels,label);byLabel[label]=toy
 		end
+		table.insert(labels,"Pallet (5 points)");byLabel["Pallet (5 points)"]={id="PalletLightBrown",name="Pallet",points=5}
 		local picker=toyGroup:AddDropdown("CreativeToySelection",{Text="Decorative toy",Values=labels,Default=1,
 			Callback=function(value) if byLabel[value] then selected=byLabel[value];updateBudget() end end})
 		toyGroup:AddInput("CreativeToySearch",{Text="Search toys",Default="",Finished=false,
@@ -7400,6 +8028,14 @@ do
 		toyGroup:AddToggle("CreativeToyAutoSpawn",{Text="Spawn missing toys when aura starts",Default=false,
 			Callback=function(value) autoSpawn=value end})
 		toyGroup:AddButton({Text="Spawn selected toys",Func=function() spawnBatch(false) end})
+        Hub.quickSpawnCreativeToy=function() spawnBatch(false,1) end
+        local quickEnabled=false
+        toyGroup:AddToggle("CreativeQuickSpawn",{Text="Quick spawn selected toy",Default=false,Callback=function(on) quickEnabled=on end})
+        Hub.keybindGroups.actions:AddLabel("Quick-spawn selected toy"):AddKeyPicker("CreativeQuickSpawnKey",{Default="P",NoUI=true,Text="Quick-spawn key"})
+        Hub.connect(UserInputService.InputBegan,function(input,processed)
+            local key=Options.CreativeQuickSpawnKey
+            if not processed and quickEnabled and key and Hub.matchesKeybind("CreativeQuickSpawnKey", input, "P") and not UserInputService:GetFocusedTextBox() then spawnBatch(false,1) end
+        end)
 		toyGroup:AddButton({Text="Stop spawning",Func=function() cancelled=true;spawnStatus:SetText(busy and "Stopping after the current request returns." or "No spawn batch running.") end})
 		toyGroup:AddButton({Text="Remove toys spawned by this tool",Func=function()
 			cancelled=true
@@ -7446,363 +8082,483 @@ end
 
 -- Nearby object attraction, without ownership requests or player manipulation.
 do
-(function()
-    local group=Tabs.Aura:AddRightGroupbox("Object Attraction Aura")
-    local enabled=false
-    local range,pullSpeed,limit=35,1200,80
-    local entries={}
-    local connection
-    local elapsed,scanElapsed=0,0
-    local status=group:AddLabel("Attraction is off.")
-    local query=OverlapParams.new()
-    query.FilterType=Enum.RaycastFilterType.Exclude
-    query.MaxParts=512
+	(function()
+		local group=Tabs.Aura:AddRightGroupbox("Object Attraction Aura")
+		local enabled=false
+		local range,pullSpeed,limit=35,1200,80
+		local entries={}
+        Hub.objectAttractionParts=entries
+		local connection
+		local elapsed,scanElapsed=0,0
+		local status=group:AddLabel("Attraction is off.")
+		local query=OverlapParams.new()
+		query.FilterType=Enum.RaycastFilterType.Exclude
+		query.MaxParts=512
 
-    local function characterPart(part)
-        local parent=part.Parent
-        while parent and parent~=Workspace do
-            if parent:IsA("Model") and Players:GetPlayerFromCharacter(parent) then return true end
-            parent=parent.Parent
-        end
-        return false
-    end
-    local function eligible(part)
-        if not part or not part.Parent or not part:IsDescendantOf(Workspace) or part.Anchored then return false end
-        if part:IsA("Seat") or part:IsA("VehicleSeat") or characterPart(part) then return false end
-        -- Avoid competing with the separate creative shape controller.
-        if part:FindFirstChild("ArrivaCreativeAttachment") then return false end
-        for _,other in ipairs(part:GetConnectedParts(true)) do
-            if other.Anchored or other:IsA("Seat") or other:IsA("VehicleSeat") or characterPart(other) then return false end
-        end
-        return true
-    end
-    local function release(part)
-        local entry=entries[part]
-        if not entry then return end
-        entries[part]=nil
-        for _,object in ipairs(entry) do
-            Hub.instances[object]=nil
-            Hub.assetTargets[object]=nil
-            pcall(function() object:Destroy() end)
-        end
-        for member,saved in pairs(entry.physics) do
-            pcall(function()
-                if member.Parent then member.CanCollide=saved.collide;member.Massless=saved.massless end
-            end)
-        end
-    end
-    local function applyPhysics(part,entry)
-        local members=part:GetConnectedParts(true)
-        table.insert(members,part)
-        local present={}
-        for _,member in ipairs(members) do
-            present[member]=true
-            if not entry.physics[member] then
-                entry.physics[member]={collide=member.CanCollide,massless=member.Massless}
-            end
-            member.CanCollide=false
-            member.Massless=true
-        end
-        for member,saved in pairs(entry.physics) do
-            if not present[member] then
-                pcall(function()
-                    if member.Parent then member.CanCollide=saved.collide;member.Massless=saved.massless end
-                end)
-                entry.physics[member]=nil
-            end
-        end
-    end
-    local function stop()
-        if connection then connection:Disconnect();Hub.connections[connection]=nil;connection=nil end
-        local parts={}
-        for part in pairs(entries) do table.insert(parts,part) end
-        for _,part in ipairs(parts) do release(part) end
-        elapsed,scanElapsed=0,0
-    end
-    local function add(part)
-        entries[part]={physics={}}
-        applyPhysics(part,entries[part])
-    end
-    local function scan(root)
-        local active=0
-        for part in pairs(entries) do
-            if not eligible(part) or (part.Position-root.Position).Magnitude>range+5 then release(part)
-            else applyPhysics(part,entries[part]);active+=1 end
-        end
-        query.FilterDescendantsInstances=Player.Character and {Player.Character} or {}
-        if active<limit then
-            local seen={}
-            for _,item in ipairs(Workspace:GetPartBoundsInRadius(root.Position,range,query)) do
-                local part=item.AssemblyRootPart or item
-                if not seen[part] and not entries[part] then
-                    seen[part]=true
-                    if (part.Position-root.Position).Magnitude<=range and eligible(part) then
-                        add(part);active+=1
-                        if active>=limit then break end
-                    end
-                end
-            end
-        end
-        status:SetText(string.format("Attracting %d objects, range %d studs.",active,range))
-    end
-    local function start()
-        stop()
-        if not enabled then status:SetText("Attraction is off.");return end
-        scanElapsed=0.5
-        connection=Hub.connect(RunService.Heartbeat,function(dt)
-            elapsed+=dt;scanElapsed+=dt
-            if elapsed<1/30 then return end
-            local deltaTime=math.min(elapsed,0.1)
-            elapsed=0
-            local char=Player.Character
-            local hum=char and char:FindFirstChildOfClass("Humanoid")
-            local root=char and char:FindFirstChild("HumanoidRootPart")
-            if not root or not hum or hum.Health<=0 then stop();status:SetText("Waiting for your character.");return end
-            if scanElapsed>=0.5 then scanElapsed=0;scan(root) end
-            -- Gather around the character rather than targeting their body.
-            for part,entry in pairs(entries) do
-                if not part.Parent or part.Anchored then release(part)
-                else
-                    local delta=part.Position-root.Position
-                    local horizontal=Vector3.new(delta.X,0,delta.Z)
-                    local direction=horizontal.Magnitude>0.01 and horizontal.Unit or root.CFrame.LookVector
-                    local goal=root.Position+direction*6+Vector3.new(0,1,0)
-                    local offset=goal-part.Position
-                    local step=pullSpeed*deltaTime
-                    local position=offset.Magnitude<=step and goal or part.Position+offset.Unit*step
-                    part.CFrame=CFrame.new(position)*part.CFrame.Rotation
-                    part.AssemblyLinearVelocity=Vector3.zero
-                    part.AssemblyAngularVelocity=Vector3.zero
-                end
-            end
-        end)
-    end
-    group:AddToggle("ObjectAttractionEnabled",{Text="Object Attraction Aura",Default=false,
-        Callback=function(value) enabled=value;start() end})
-    group:AddSlider("ObjectAttractionRange",{Text="Attraction range",Default=35,Min=10,Max=120,Rounding=0,
-        Callback=function(value) range=value;scanElapsed=0.5 end})
-    group:AddSlider("ObjectAttractionDirectSpeed",{Text="Attraction speed (studs/sec)",Default=1200,Min=100,Max=3000,Rounding=0,
-        Callback=function(value) pullSpeed=value end})
-    group:AddSlider("ObjectAttractionLimit",{Text="Maximum objects",Default=80,Min=10,Max=150,Rounding=0,
-        Callback=function(value) limit=value;if enabled then start() end end})
-    group:AddLabel("Pulls nearby unanchored objects and NPCs into a 6-stud ring with collisions off and Massless enabled. Original properties are restored on release. Skips actual players and assemblies connected to them, anchored parts, seats and toys in the creative aura. Movement depends on client physics ownership. Large batches can reduce FPS.")
-    Hub.connect(Player.CharacterRemoving,stop)
-    Hub.connect(Player.CharacterAdded,function(char)
-        task.spawn(function()
-            local root=char:WaitForChild("HumanoidRootPart",5)
-            if root and enabled and Hub.alive and Player.Character==char then start() end
-        end)
-    end)
-    Hub.cleanup(function() enabled=false;stop() end)
-end)()
+		local function characterPart(part)
+			local parent=part.Parent
+			while parent and parent~=Workspace do
+				if parent:IsA("Model") and Players:GetPlayerFromCharacter(parent) then return true end
+				parent=parent.Parent
+			end
+			return false
+		end
+		local function eligible(part)
+            if part and ((Hub.toyBuildClaims and Hub.toyBuildClaims[part.AssemblyRootPart or part]) or (Hub.missileLaunchClaims and Hub.missileLaunchClaims[part.AssemblyRootPart or part])) then return false end
+			if not part or not part.Parent or not part:IsDescendantOf(Workspace) or part.Anchored then return false end
+			if part:IsA("Seat") or part:IsA("VehicleSeat") or characterPart(part) then return false end
+			-- Avoid competing with the separate creative shape controller.
+			if part:FindFirstChild("ArrivaCreativeAttachment") then return false end
+			for _,other in ipairs(part:GetConnectedParts(true)) do
+				if other.Anchored or other:IsA("Seat") or other:IsA("VehicleSeat") or characterPart(other) then return false end
+			end
+			return true
+		end
+		local function release(part)
+			local entry=entries[part]
+			if not entry then return end
+			entries[part]=nil
+			for _,object in ipairs(entry) do
+				Hub.instances[object]=nil
+				Hub.assetTargets[object]=nil
+				pcall(function() object:Destroy() end)
+			end
+			for member,saved in pairs(entry.physics) do
+				pcall(function()
+					if member.Parent then member.CanCollide=saved.collide;member.Massless=saved.massless end
+				end)
+			end
+		end
+		local function applyPhysics(part,entry)
+			local members=part:GetConnectedParts(true)
+			table.insert(members,part)
+			local present={}
+			for _,member in ipairs(members) do
+				present[member]=true
+				if not entry.physics[member] then
+					entry.physics[member]={collide=member.CanCollide,massless=member.Massless}
+				end
+				member.CanCollide=false
+				member.Massless=true
+			end
+			for member,saved in pairs(entry.physics) do
+				if not present[member] then
+					pcall(function()
+						if member.Parent then member.CanCollide=saved.collide;member.Massless=saved.massless end
+					end)
+					entry.physics[member]=nil
+				end
+			end
+		end
+		local function stop()
+			if connection then connection:Disconnect();Hub.connections[connection]=nil;connection=nil end
+			local parts={}
+			for part in pairs(entries) do table.insert(parts,part) end
+			for _,part in ipairs(parts) do release(part) end
+			elapsed,scanElapsed=0,0
+		end
+		local function add(part)
+			entries[part]={physics={}}
+			applyPhysics(part,entries[part])
+		end
+		local function scan(root)
+			local active=0
+			for part in pairs(entries) do
+				if not eligible(part) or (part.Position-root.Position).Magnitude>range+5 then release(part)
+				else applyPhysics(part,entries[part]);active+=1 end
+			end
+			query.FilterDescendantsInstances=Player.Character and {Player.Character} or {}
+			if active<limit then
+				local seen={}
+				for _,item in ipairs(Workspace:GetPartBoundsInRadius(root.Position,range,query)) do
+					local part=item.AssemblyRootPart or item
+					if not seen[part] and not entries[part] then
+						seen[part]=true
+						if (part.Position-root.Position).Magnitude<=range and eligible(part) then
+							add(part);active+=1
+							if active>=limit then break end
+						end
+					end
+				end
+			end
+			status:SetText(string.format("Attracting %d objects, range %d studs.",active,range))
+		end
+		local function start()
+			stop()
+			if not enabled then status:SetText("Attraction is off.");return end
+			scanElapsed=0.5
+			connection=Hub.connect(RunService.Heartbeat,function(dt)
+				elapsed+=dt;scanElapsed+=dt
+				if elapsed<1/30 then return end
+				local deltaTime=math.min(elapsed,0.1)
+				elapsed=0
+				local char=Player.Character
+				local hum=char and char:FindFirstChildOfClass("Humanoid")
+				local root=char and char:FindFirstChild("HumanoidRootPart")
+				if not root or not hum or hum.Health<=0 then stop();status:SetText("Waiting for your character.");return end
+				if scanElapsed>=0.5 then scanElapsed=0;scan(root) end
+				-- Gather around the character rather than targeting their body.
+				for part,entry in pairs(entries) do
+					if not part.Parent or part.Anchored then release(part)
+					else
+						local delta=part.Position-root.Position
+						local horizontal=Vector3.new(delta.X,0,delta.Z)
+						local direction=horizontal.Magnitude>0.01 and horizontal.Unit or root.CFrame.LookVector
+						local goal=root.Position+direction*6+Vector3.new(0,1,0)
+						local offset=goal-part.Position
+						local step=pullSpeed*deltaTime
+						local position=offset.Magnitude<=step and goal or part.Position+offset.Unit*step
+						part.CFrame=CFrame.new(position)*part.CFrame.Rotation
+						part.AssemblyLinearVelocity=Vector3.zero
+						part.AssemblyAngularVelocity=Vector3.zero
+					end
+				end
+			end)
+		end
+		group:AddToggle("ObjectAttractionEnabled",{Text="Object Attraction Aura",Default=false,
+			Callback=function(value) enabled=value;start() end})
+		group:AddSlider("ObjectAttractionRange",{Text="Attraction range",Default=35,Min=10,Max=120,Rounding=0,
+			Callback=function(value) range=value;scanElapsed=0.5 end})
+		group:AddSlider("ObjectAttractionDirectSpeed",{Text="Attraction speed (studs/sec)",Default=1200,Min=100,Max=3000,Rounding=0,
+			Callback=function(value) pullSpeed=value end})
+		group:AddSlider("ObjectAttractionLimit",{Text="Maximum objects",Default=80,Min=10,Max=150,Rounding=0,
+			Callback=function(value) limit=value;if enabled then start() end end})
+		group:AddLabel("Pulls nearby unanchored objects and NPCs into a 6-stud ring with collisions off and Massless enabled. Original properties are restored on release. Skips actual players and assemblies connected to them, anchored parts, seats and toys in the creative aura. Movement depends on client physics ownership. Large batches can reduce FPS.")
+		Hub.connect(Player.CharacterRemoving,stop)
+		Hub.connect(Player.CharacterAdded,function(char)
+			task.spawn(function()
+				local root=char:WaitForChild("HumanoidRootPart",5)
+				if root and enabled and Hub.alive and Player.Character==char then start() end
+			end)
+		end)
+		Hub.cleanup(function() enabled=false;stop();Hub.objectAttractionParts=nil end)
+	end)()
 end
 
 -- Notification-only inspection of server-to-client RemoteEvent arguments.
 do
-(function()
-    local group=Tabs.AntiLag:AddRightGroupbox("Incoming Payload Monitor")
-    local enabled=false
-    local threshold,cooldown=256*1024,8
-    local generation,nextAlert=0,0
-    local listeners,watched={},{}
-    local remoteCount=0
-    local lastReport
-    local received,largest=0,0
-    local captureNext=false
-    local discovering=false
-    local status=group:AddLabel("Incoming payload monitor is off.")
-    local function resolvePlayer(value)
-        if typeof(value)~="Instance" then return nil end
-        local ok,player=pcall(function()
-            if not value:IsA("Player") then return nil end
-            -- Resolve to the service's current Player, avoiding reliance on
-            -- equality of executor-wrapped instance references.
-            return Players:GetPlayerByUserId(value.UserId)
-        end)
-        return ok and player or nil
-    end
+	(function()
+		local group=Tabs.AntiLag:AddRightGroupbox("Incoming Payload Monitor")
+		local enabled=false
+		local threshold,cooldown=256*1024,8
+		local generation,nextAlert=0,0
+		local listeners,watched={},{}
+		local remoteCount=0
+		local lastReport
+		local received,largest=0,0
+		local captureNext=false
+		local discovering=false
+		local status=group:AddLabel("Incoming payload monitor is off.")
+		local function resolvePlayer(value)
+			if typeof(value)~="Instance" then return nil end
+			local ok,player=pcall(function()
+				if not value:IsA("Player") then return nil end
+				-- Resolve to the service's current Player, avoiding reliance on
+				-- equality of executor-wrapped instance references.
+				return Players:GetPlayerByUserId(value.UserId)
+			end)
+			return ok and player or nil
+		end
 
-    -- Counts observed string and buffer bytes, not compressed packets or transport overhead.
-    -- The budget bounds table traversal, cycles are never followed twice.
-    local function inspect(args)
-        local bytes,budget=0,128
-        local seen={}
-        local sender,ambiguous
-        local function visit(value,depth)
-            if budget<=0 then return end
-            budget-=1
-            local kind=typeof(value)
-            if kind=="string" then bytes+=#value
-            elseif kind=="buffer" then bytes+=buffer.len(value)
-            elseif kind=="Instance" then
-                local player=resolvePlayer(value)
-                if player then
-                    if sender and sender.UserId~=player.UserId then ambiguous=true else sender=player end
-                end
-            elseif kind=="table" and depth<4 and not seen[value] then
-                seen[value]=true
-                for key,item in pairs(value) do
-                    if budget<=0 then break end
-                    visit(key,depth+1);visit(item,depth+1)
-                end
-            end
+		-- Counts observed string and buffer bytes, not compressed packets or transport overhead.
+		-- The budget bounds table traversal, cycles are never followed twice.
+		local function inspect(args)
+			local bytes,budget=0,128
+			local seen={}
+			local sender,ambiguous
+			local function visit(value,depth)
+				if budget<=0 then return end
+				budget-=1
+				local kind=typeof(value)
+				if kind=="string" then bytes+=#value
+				elseif kind=="buffer" then bytes+=buffer.len(value)
+				elseif kind=="Instance" then
+					local player=resolvePlayer(value)
+					if player then
+						if sender and sender.UserId~=player.UserId then ambiguous=true else sender=player end
+					end
+				elseif kind=="table" and depth<4 and not seen[value] then
+					seen[value]=true
+					for key,item in pairs(value) do
+						if budget<=0 then break end
+						visit(key,depth+1);visit(item,depth+1)
+					end
+				end
+			end
+			for index=1,args.n do
+				if budget<=0 then break end
+				visit(args[index],0)
+			end
+			return bytes,not ambiguous and sender or nil,budget<=0
+		end
+		local function safePath(instance)
+			local ok,path=pcall(function() return instance:GetFullName() end)
+			return ok and path:sub(1,180) or instance.ClassName
+		end
+		local function diagnostic(remote,args,bytes,sender,truncated)
+			local lines={"[Arriva payload diagnostic]", "Remote: " .. safePath(remote),
+				string.format("Observed string/buffer bytes: %d%s",bytes,truncated and " (inspection limit reached)" or ""),
+				"Player value included: " .. (sender and sender.Name or "none or ambiguous")}
+			-- Remote location can identify a character's remote without identifying
+			-- who originally caused the server to fire it.
+			local ancestor=remote.Parent
+			while ancestor and ancestor~=game do
+				if ancestor:IsA("Model") then
+					local owner=Players:GetPlayerFromCharacter(ancestor)
+					if owner then table.insert(lines,"Remote belongs to character: " .. owner.Name);break end
+				end
+				ancestor=ancestor.Parent
+			end
+			for index=1,math.min(args.n,12) do
+				local value=args[index]
+				local kind=typeof(value)
+				local detail=kind
+				if kind=="string" then
+					detail=string.format("string, %d bytes",#value)
+					if #value<=32 then detail..=", " .. string.format("%q",value:gsub("%c","?")) end
+				elseif kind=="Instance" then detail=value.ClassName .. ", " .. safePath(value)
+				elseif kind=="buffer" then detail=string.format("buffer, %d bytes",buffer.len(value))
+				end
+				table.insert(lines,string.format("Arg %d: %s",index,detail))
+			end
+			if args.n>12 then table.insert(lines,"Additional arguments omitted.") end
+			return table.concat(lines,"\n")
+		end
+		local function stop()
+			generation+=1
+			for connection in pairs(listeners) do
+				connection:Disconnect();Hub.connections[connection]=nil
+			end
+			table.clear(listeners);table.clear(watched)
+			remoteCount=0;nextAlert=0;received=0;largest=0;captureNext=false;discovering=false
+		end
+		local function track(event,callback)
+			local connection=Hub.connect(event,callback)
+			listeners[connection]=true
+			return connection
+		end
+		local function watch(remote)
+			if watched[remote] or remoteCount>=2048 or not (remote:IsA("RemoteEvent") or remote:IsA("UnreliableRemoteEvent")) then return end
+			local accessible,event=pcall(function() return remote.OnClientEvent end)
+			if not accessible then return end
+			local ok,incoming=pcall(track,event,function(...)
+				if not enabled then return end
+				received+=1
+				if not captureNext and os.clock()<nextAlert then return end
+				local args=table.pack(...)
+				local bytes,sender,truncated=inspect(args)
+				-- Captured FTAP ExtendGrabLine events put the relayed Player first.
+				if remote.Name=="ExtendGrabLine" and remote.Parent and remote.Parent.Name=="GrabEvents" then
+					sender=resolvePlayer(args[1]) or sender
+				end
+				largest=math.max(largest,bytes)
+				if captureNext then
+					captureNext=false
+					lastReport=diagnostic(remote,args,bytes,sender,truncated)
+					print(lastReport)
+					notify("Payload monitor","Captured one incoming event, details are in the F9 console.",5)
+				end
+				if bytes<threshold then return end
+				if os.clock()<nextAlert then return end
+				nextAlert=os.clock()+cooldown
+				lastReport=diagnostic(remote,args,bytes,sender,truncated)
+				print(lastReport)
+				local name=remote.Name:sub(1,80)
+				local amount=string.format("%s%.2f MiB of string/buffer data",truncated and "at least " or "",bytes/1048576)
+				local message=sender and (sender.Name .. ", " .. amount .. ", remote: " .. name .. ".")
+					or (name .. " received " .. amount .. ".")
+				notify("Large incoming payload",message,6)
+				status:SetText(string.format("Watching %d remotes, last alert %.2f MiB of string/buffer data.",remoteCount,bytes/1048576))
+			end)
+			if not ok then return end
+			watched[remote]=true;remoteCount+=1
+			local destroying
+			destroying=track(remote.Destroying,function()
+				if watched[remote] then watched[remote]=nil;remoteCount-=1 end
+				incoming:Disconnect();Hub.connections[incoming]=nil
+				listeners[incoming]=nil
+				destroying:Disconnect();Hub.connections[destroying]=nil
+				listeners[destroying]=nil
+			end)
+		end
+		local function start()
+			stop()
+			if not enabled then status:SetText("Incoming payload monitor is off.");return end
+			local ticket=generation
+			-- Listen first so new remotes aren't missed during initial discovery.
+			track(game.DescendantAdded,watch)
+			discovering=true
+			status:SetText("Discovering incoming remotes...")
+			local uiElapsed=0
+			track(RunService.Heartbeat,function(dt)
+				uiElapsed+=dt
+				if uiElapsed<1 then return end
+				uiElapsed=0
+				status:SetText(string.format("%s%d remotes, %d events received, largest inspected %.1f KiB.",
+					discovering and "Scanning, " or "Watching ",remoteCount,received,largest/1024))
+			end)
+			task.spawn(function()
+				local queue={}
+				local head,tail=1,0
+				tail=1;queue[tail]=game
+				while head<=tail and enabled and Hub.alive and generation==ticket do
+					local deadline=os.clock()+0.001
+					local processed=0
+					repeat
+						local item=queue[head];queue[head]=nil;head+=1
+						if item and (item==game or item.Parent) then
+							watch(item)
+							-- Some engine services cannot be enumerated by a client.
+							local ok,children=pcall(function() return item:GetChildren() end)
+							if ok then for _,child in ipairs(children) do tail+=1;queue[tail]=child end end
+						end
+						processed+=1
+					until head>tail or processed>=128 or os.clock()>=deadline
+					RunService.Heartbeat:Wait()
+				end
+				if enabled and Hub.alive and generation==ticket then
+					discovering=false
+					status:SetText(string.format("Watching %d remotes, %d events received.",remoteCount,received))
+				end
+			end)
+		end
+		group:AddToggle("IncomingPayloadMonitor",{Text="Large incoming payload alerts",Default=false,
+			Callback=function(value) enabled=value;start() end})
+		group:AddSlider("IncomingPayloadThreshold",{Text="String/buffer alert threshold (KiB)",Default=256,Min=1,Max=4096,Rounding=0,
+			Callback=function(value) threshold=value*1024 end})
+		group:AddSlider("IncomingPayloadCooldown",{Text="Alert cooldown (seconds)",Default=8,Min=2,Max=60,Rounding=0,
+			Callback=function(value) cooldown=value end})
+		group:AddButton({Text="Print last payload diagnostic",Func=function()
+			if lastReport then print(lastReport)
+			else notify("Payload monitor","No oversized incoming payload has been recorded this session.",5) end
+		end})
+		group:AddButton({Text="Capture next incoming event",Func=function()
+			if not enabled then notify("Payload monitor","Enable the monitor first.",4);return end
+			captureNext=true
+			notify("Payload monitor","Waiting for one incoming RemoteEvent, even below the alert threshold.",5)
+		end})
+		group:AddLabel("Scans accessible remotes across the client, including player and sound containers. Measures observed string/buffer bytes, not wire size. Player values are event metadata, not proof of origin. Cannot inspect other clients' private outgoing calls, engine-internal traffic, or block data. RemoteFunction callbacks are left untouched. Discovery is capped at 2048 remotes.")
+		Hub.cleanup(function() enabled=false;stop() end)
+	end)()
+end
+
+-- A saved destination is explicit, it does not grant server-side safe-zone status.
+do
+(function()
+    local group=Tabs.Defense:AddRightGroupbox("Safe Zone")
+    local destination=Vector3.new(606,124,-101)
+    local spawnEnabled,loopEnabled=false,false
+    local loopConnection
+    local epoch=0
+    local status=group:AddLabel("Safe zone: 606, 124, -101. Use my current position to change it.")
+    local function setDestination(text)
+        local x,y,z=tostring(text or ""):match("^%s*([%+%-%.%deE]+)%s*,%s*([%+%-%.%deE]+)%s*,%s*([%+%-%.%deE]+)%s*$")
+        x,y,z=tonumber(x),tonumber(y),tonumber(z)
+        if not x or not y or not z or x~=x or y~=y or z~=z or math.abs(x)>1000000 or math.abs(y)>1000000 or math.abs(z)>1000000 then
+            destination=nil;status:SetText("Set a safe zone using your current position or enter X, Y, Z.");return
         end
-        for index=1,args.n do
-            if budget<=0 then break end
-            visit(args[index],0)
-        end
-        return bytes,not ambiguous and sender or nil,budget<=0
+        if y<=Workspace.FallenPartsDestroyHeight+8 then destination=nil;status:SetText("Safe zone rejected, destination is below the map.");return end
+        destination=Vector3.new(x,y,z)
+        status:SetText(string.format("Saved safe zone: %.1f, %.1f, %.1f",x,y,z))
     end
-    local function safePath(instance)
-        local ok,path=pcall(function() return instance:GetFullName() end)
-        return ok and path:sub(1,180) or instance.ClassName
+    local function go(char)
+        if not destination or char~=Player.Character then return false end
+        local root=char and char:FindFirstChild("HumanoidRootPart")
+        local hum=char and char:FindFirstChildOfClass("Humanoid")
+        if not root or not hum or hum.Health<=0 then return false end
+        root.CFrame=CFrame.new(destination)*root.CFrame.Rotation
+        root.AssemblyLinearVelocity=Vector3.zero;root.AssemblyAngularVelocity=Vector3.zero
+        return true
     end
-    local function diagnostic(remote,args,bytes,sender,truncated)
-        local lines={"[Arriva payload diagnostic]", "Remote: " .. safePath(remote),
-            string.format("Observed string/buffer bytes: %d%s",bytes,truncated and " (inspection limit reached)" or ""),
-            "Player value included: " .. (sender and sender.Name or "none or ambiguous")}
-        -- Remote location can identify a character's remote without identifying
-        -- who originally caused the server to fire it.
-        local ancestor=remote.Parent
-        while ancestor and ancestor~=game do
-            if ancestor:IsA("Model") then
-                local owner=Players:GetPlayerFromCharacter(ancestor)
-                if owner then table.insert(lines,"Remote belongs to character: " .. owner.Name);break end
-            end
-            ancestor=ancestor.Parent
-        end
-        for index=1,math.min(args.n,12) do
-            local value=args[index]
-            local kind=typeof(value)
-            local detail=kind
-            if kind=="string" then
-                detail=string.format("string, %d bytes",#value)
-                if #value<=32 then detail..=", " .. string.format("%q",value:gsub("%c","?")) end
-            elseif kind=="Instance" then detail=value.ClassName .. ", " .. safePath(value)
-            elseif kind=="buffer" then detail=string.format("buffer, %d bytes",buffer.len(value))
-            end
-            table.insert(lines,string.format("Arg %d: %s",index,detail))
-        end
-        if args.n>12 then table.insert(lines,"Additional arguments omitted.") end
-        return table.concat(lines,"\n")
-    end
-    local function stop()
-        generation+=1
-        for connection in pairs(listeners) do
-            connection:Disconnect();Hub.connections[connection]=nil
-        end
-        table.clear(listeners);table.clear(watched)
-        remoteCount=0;nextAlert=0;received=0;largest=0;captureNext=false;discovering=false
-    end
-    local function track(event,callback)
-        local connection=Hub.connect(event,callback)
-        listeners[connection]=true
-        return connection
-    end
-    local function watch(remote)
-        if watched[remote] or remoteCount>=2048 or not (remote:IsA("RemoteEvent") or remote:IsA("UnreliableRemoteEvent")) then return end
-        local accessible,event=pcall(function() return remote.OnClientEvent end)
-        if not accessible then return end
-        local ok,incoming=pcall(track,event,function(...)
-            if not enabled then return end
-            received+=1
-            if not captureNext and os.clock()<nextAlert then return end
-            local args=table.pack(...)
-            local bytes,sender,truncated=inspect(args)
-            -- Captured FTAP ExtendGrabLine events put the relayed Player first.
-            if remote.Name=="ExtendGrabLine" and remote.Parent and remote.Parent.Name=="GrabEvents" then
-                sender=resolvePlayer(args[1]) or sender
-            end
-            largest=math.max(largest,bytes)
-            if captureNext then
-                captureNext=false
-                lastReport=diagnostic(remote,args,bytes,sender,truncated)
-                print(lastReport)
-                notify("Payload monitor","Captured one incoming event, details are in the F9 console.",5)
-            end
-            if bytes<threshold then return end
-            if os.clock()<nextAlert then return end
-            nextAlert=os.clock()+cooldown
-            lastReport=diagnostic(remote,args,bytes,sender,truncated)
-            print(lastReport)
-            local name=remote.Name:sub(1,80)
-            local amount=string.format("%s%.2f MiB of string/buffer data",truncated and "at least " or "",bytes/1048576)
-            local message=sender and (sender.Name .. ", " .. amount .. ", remote: " .. name .. ".")
-                or (name .. " received " .. amount .. ".")
-            notify("Large incoming payload",message,6)
-            status:SetText(string.format("Watching %d remotes, last alert %.2f MiB of string/buffer data.",remoteCount,bytes/1048576))
+    group:AddInput("SafeZoneCoordinates",{Text="Saved destination (X, Y, Z)",Default="606, 124, -101",Finished=true,Callback=setDestination})
+    group:AddButton({Text="Use my current position",Func=function()
+        local char=Player.Character
+        local root=char and char:FindFirstChild("HumanoidRootPart")
+        if not root then return end
+        local p=root.Position
+        Options.SafeZoneCoordinates:SetValue(string.format("%.3f, %.3f, %.3f",p.X,p.Y,p.Z))
+        Hub.requestSave()
+    end})
+    group:AddButton({Text="Go to safe zone now",Func=function()
+        if not go(Player.Character) then notify("Safe zone","Set a destination and wait for your character to be ready.",4) end
+    end})
+    group:AddToggle("SpawnAtSafeZone",{Text="Spawn at safe zone",Default=false,Callback=function(on) spawnEnabled=on;epoch+=1;Hub.requestSave() end})
+    group:AddToggle("LoopSafeZone",{Text="Loop go to safe zone (10/sec)",Default=false,Callback=function(on)
+        loopEnabled=on;Hub.safeZoneLoopActive=on
+        if loopConnection then loopConnection:Disconnect();Hub.connections[loopConnection]=nil;loopConnection=nil end
+        Hub.requestSave()
+        if not on then return end
+        local elapsed=0
+        loopConnection=Hub.connect(RunService.Heartbeat,function(dt)
+            elapsed+=dt
+            if elapsed<0.1 then return end
+            elapsed=0 -- No burst of catch-up teleports after a lag spike.
+            go(Player.Character)
         end)
-        if not ok then return end
-        watched[remote]=true;remoteCount+=1
-        local destroying
-        destroying=track(remote.Destroying,function()
-            if watched[remote] then watched[remote]=nil;remoteCount-=1 end
-            incoming:Disconnect();Hub.connections[incoming]=nil
-            listeners[incoming]=nil
-            destroying:Disconnect();Hub.connections[destroying]=nil
-            listeners[destroying]=nil
-        end)
-    end
-    local function start()
-        stop()
-        if not enabled then status:SetText("Incoming payload monitor is off.");return end
-        local ticket=generation
-        -- Listen first so new remotes aren't missed during initial discovery.
-        track(game.DescendantAdded,watch)
-        discovering=true
-        status:SetText("Discovering incoming remotes...")
-        local uiElapsed=0
-        track(RunService.Heartbeat,function(dt)
-            uiElapsed+=dt
-            if uiElapsed<1 then return end
-            uiElapsed=0
-            status:SetText(string.format("%s%d remotes, %d events received, largest inspected %.1f KiB.",
-                discovering and "Scanning, " or "Watching ",remoteCount,received,largest/1024))
-        end)
+        if not destination then notify("Safe zone","Choose Use my current position before the loop can move you.",5) end
+    end})
+    Hub.connect(Player.CharacterAdded,function(char)
+        epoch+=1;local ticket=epoch
+        if not spawnEnabled then return end
         task.spawn(function()
-            local queue={}
-            local head,tail=1,0
-            tail=1;queue[tail]=game
-            while head<=tail and enabled and Hub.alive and generation==ticket do
-                local deadline=os.clock()+0.001
-                local processed=0
-                repeat
-                    local item=queue[head];queue[head]=nil;head+=1
-                    if item and (item==game or item.Parent) then
-                        watch(item)
-                        -- Some engine services cannot be enumerated by a client.
-                        local ok,children=pcall(function() return item:GetChildren() end)
-                        if ok then for _,child in ipairs(children) do tail+=1;queue[tail]=child end end
-                    end
-                    processed+=1
-                until head>tail or processed>=128 or os.clock()>=deadline
-                RunService.Heartbeat:Wait()
-            end
-            if enabled and Hub.alive and generation==ticket then
-                discovering=false
-                status:SetText(string.format("Watching %d remotes, %d events received.",remoteCount,received))
-            end
+            local deadline=os.clock()+8
+            repeat
+                if not Hub.alive or not spawnEnabled or epoch~=ticket or Player.Character~=char then return end
+                if go(char) then return end
+                task.wait(0.1)
+            until os.clock()>=deadline
         end)
-    end
-    group:AddToggle("IncomingPayloadMonitor",{Text="Large incoming payload alerts",Default=false,
-        Callback=function(value) enabled=value;start() end})
-    group:AddSlider("IncomingPayloadThreshold",{Text="String/buffer alert threshold (KiB)",Default=256,Min=1,Max=4096,Rounding=0,
-        Callback=function(value) threshold=value*1024 end})
-    group:AddSlider("IncomingPayloadCooldown",{Text="Alert cooldown (seconds)",Default=8,Min=2,Max=60,Rounding=0,
-        Callback=function(value) cooldown=value end})
-    group:AddButton({Text="Print last payload diagnostic",Func=function()
-        if lastReport then print(lastReport)
-        else notify("Payload monitor","No oversized incoming payload has been recorded this session.",5) end
-    end})
-    group:AddButton({Text="Capture next incoming event",Func=function()
-        if not enabled then notify("Payload monitor","Enable the monitor first.",4);return end
-        captureNext=true
-        notify("Payload monitor","Waiting for one incoming RemoteEvent, even below the alert threshold.",5)
-    end})
-    group:AddLabel("Scans accessible remotes across the client, including player and sound containers. Measures observed string/buffer bytes, not wire size. Player values are event metadata, not proof of origin. Cannot inspect other clients' private outgoing calls, engine-internal traffic, or block data. RemoteFunction callbacks are left untouched. Discovery is capped at 2048 remotes.")
-    Hub.cleanup(function() enabled=false;stop() end)
+    end)
+    Hub.connect(Player.CharacterRemoving,function() epoch+=1 end)
+    group:AddLabel("Choose a position inside the game's real safe zone. These options teleport your character, they do not grant protection or change your RespawnLocation. Loop mode overrides ordinary movement while enabled.")
+    Hub.cleanup(function()
+        spawnEnabled=false;loopEnabled=false;epoch+=1;Hub.safeZoneLoopActive=nil
+        if loopConnection then loopConnection:Disconnect();Hub.connections[loopConnection]=nil;loopConnection=nil end
+    end)
 end)()
 end
+
+
+-- Local presentation tools inspired by the reference's Perspective settings.
+do
+(function()
+    local group=Tabs.Player:AddRightGroupbox("Camera Effects")
+    local preset,strength="Off",50
+    local gui,effect,overlay
+    local disposed=false
+    local function clear()
+        if overlay then Hub.instances[overlay]=nil;Hub.assetTargets[overlay]=nil end
+        if gui then Hub.instances[gui]=nil;Hub.assetTargets[gui]=nil;gui:Destroy() end
+        if effect then Hub.instances[effect]=nil;Hub.assetTargets[effect]=nil;effect:Destroy() end
+        gui,effect,overlay=nil,nil,nil
+    end
+    local function apply()
+        if disposed or preset=="Off" then clear();return end
+        local playerGui=Player:FindFirstChildOfClass("PlayerGui")
+        if not playerGui then return end
+        if not gui or not gui.Parent or not effect or not effect.Parent then
+            clear()
+            gui=Hub.new("ScreenGui",playerGui)
+            gui.Name="ArrivaCameraEffects";gui.ResetOnSpawn=false;gui.IgnoreGuiInset=true;gui.DisplayOrder=-10
+            overlay=Hub.new("ImageLabel",gui)
+            overlay.Size=UDim2.fromScale(1,1);overlay.BackgroundTransparency=1;overlay.BorderSizePixel=0
+            overlay.Active=false;overlay.ImageColor3=Color3.new(0,0,0)
+            effect=Hub.new("ColorCorrectionEffect",game:GetService("Lighting"))
+        end
+        overlay.Image=preset=="Old TV" and "rbxassetid://8586979842" or "rbxassetid://5945121255"
+        overlay.ImageTransparency=1-strength/100*0.6
+        effect.Name="ArrivaCameraColor";effect.Saturation=-(preset=="Old TV" and 0.3 or 0.6)*strength/100
+    end
+    group:AddDropdown("LocalCameraEffect",{Text="Camera effect",Values={"Off","Vignette","Old TV"},Default=1,
+        Callback=function(value) preset=value;apply() end})
+    group:AddSlider("LocalCameraEffectStrength",{Text="Effect strength (%)",Default=50,Min=0,Max=100,Rounding=0,
+        Callback=function(value) strength=value;apply() end})
+    group:AddLabel("Local overlay and color grading only. Turn Off to restore the normal view.")
+    Hub.connect(Player.ChildAdded,function(child) if child:IsA("PlayerGui") then apply() end end)
+    Hub.cleanup(function() disposed=true;clear() end)
+end)()
+end
+
 
 -- UI Settings
 local MenuGroup = Tabs["UI Settings"]:AddLeftGroupbox("Menu")
@@ -7818,6 +8574,255 @@ do
 	widget:AddLabel("Stays visible while the menu is closed and follows your theme. Updates twice per second.")
 end
 local ThemeGroup = Tabs.Customization:AddLeftGroupbox("Hub Theme")
+-- Optional creative tools. No ownership requests or changes to other players' toys.
+do
+    local selectors=Tabs.Updates:AddLeftGroupbox("ESP and Selector Polish")
+    selectors:AddLabel("Player ESP uses bold white lettering with a white character outline. Fill color remains separate. Player lists update in place without closing an open menu or resetting a player who is still listed. If your selected player leaves, the choice clears instead of switching to someone else.")
+    local fixes=Tabs.Updates:AddLeftGroupbox("Protection and Stability Fixes")
+    fixes:AddLabel("The extra ESP now uses the main ESP switch and appearance section. Action buttons have more room, padded text and bounded text scaling.")
+    fixes:AddLabel("Anti Paint ignores unrelated object removals. Joining and leaving players no longer rebuild every dropdown row, and roster refresh bursts are combined. Departed-player ownership and target respawn bindings are disconnected.")
+    fixes:AddLabel("Anti Paint and Blobman startup scans are spread over frames. Anti Blobman also checks detector parts and constraints that arrive after the toy appears, while leaving your own Blobman alone.")
+    fixes:AddLabel("Optional extreme velocity recovery and unwanted-seat protection are in Defense. Frame spike recording is in Anti Lag. They start off, so you can choose which protections suit your setup.")
+    local log=Tabs.Updates:AddLeftGroupbox("Creative Feature Pack")
+    log:AddLabel("Your toys now have their own manager. Refresh the list to locate a toy, bring it closer or put it into a named group. Groups keep their spacing when moved. Delete buttons need a separate switch enabled first.")
+    log:AddLabel("Creative Object Aura now includes Tornado, Blackhole and Star formations. Follow your cursor or click a spot to leave the formation there. Local decoration mode still works without spawning toys.")
+    log:AddLabel("Anchor highlights have separate fill and outline colors, transparency and optional labels. Player Options now includes map locations, custom coordinates, a detailed avatar/health ESP and adjustable follow positioning for your character.")
+    log:AddLabel("Menu Customization includes optional corner buttons for surface teleport, anchoring the held object and spawning a selected decorative toy. They use your hub theme and the existing action handlers.")
+end
+do
+(function()
+    local manager=Tabs.Fun:AddRightGroupbox("My Toy Manager and Groups")
+    local list,selected={},nil
+    local groups,groupName={},"My group"
+    local status=manager:AddLabel("Refresh to list your toys.")
+    local function folder() return Workspace:FindFirstChild(Player.Name.."SpawnedInToys") end
+    local function own(model)
+        local f=folder()
+        return f and model and model.Parent==f and model:IsA("Model")
+    end
+    local function movable(model)
+        if not own(model) or model:FindFirstChildOfClass("Humanoid") then return false end
+        for _,p in ipairs(model:GetDescendants()) do
+            if p:IsA("BasePart") then
+                if (Hub.toyBuildClaims and Hub.toyBuildClaims[p.AssemblyRootPart or p]) or (Hub.missileLaunchClaims and Hub.missileLaunchClaims[p.AssemblyRootPart or p]) then return false end
+                if p.Anchored or p:IsA("Seat") or p:IsA("VehicleSeat") then return false end
+                for _,q in ipairs(p:GetConnectedParts(true)) do
+                    if not q:IsDescendantOf(model) then return false end
+                end
+            end
+        end
+        return model:FindFirstChildWhichIsA("BasePart",true)~=nil
+    end
+    Hub.isOwnCreativeToy=own
+    local function root() return Player.Character and Player.Character:FindFirstChild("HumanoidRootPart") end
+    local function report(text) status:SetText(text) end
+    local picker
+    local function refresh()
+        list={};local labels={};local f=folder()
+        if f then for _,model in ipairs(f:GetChildren()) do
+            if own(model) and #labels<100 then
+                local label=string.format("%03d | %s",#labels+1,model.Name)
+                list[label]=model;table.insert(labels,label)
+            end
+        end end
+        table.sort(labels);picker:SetValues(labels)
+        selected=nil
+        report(string.format("%d toys listed. Select one before using an action.",#labels))
+    end
+    picker=manager:AddDropdown("OwnToySelection",{Text="Your toys",Values={},Callback=function(value) selected=list[value] end})
+    manager:AddButton("Refresh toy list",refresh)
+    manager:AddButton("Locate selected toy",function()
+        local r=root();if not r or not own(selected) then return end
+        report(string.format("%s is %.0f studs away.",selected.Name,(selected:GetPivot().Position-r.Position).Magnitude))
+        local h=Hub.new("Highlight",selected);h.Adornee=selected
+        task.delay(3,function() if h.Parent then h:Destroy() end end)
+    end)
+    local function move(models)
+        local r=root();if not r then return end
+        local valid={}
+        for model in pairs(models) do if movable(model) and #valid<40 then table.insert(valid,model) end end
+        if #valid==0 then report("No movable own toys selected. Anchored, seated or connected toys are skipped.");return end
+        local origin=valid[1]:GetPivot();local goal=r.CFrame*CFrame.new(0,2,-10)
+        for _,model in ipairs(valid) do
+            model:PivotTo(goal*origin:ToObjectSpace(model:GetPivot()))
+            for _,p in ipairs(model:GetDescendants()) do if p:IsA("BasePart") then
+                p.AssemblyLinearVelocity=Vector3.zero;p.AssemblyAngularVelocity=Vector3.zero
+            end end
+        end
+        report(string.format("Moved %d own toys. Server ownership can limit replication.",#valid))
+    end
+    manager:AddButton("Bring selected toy in front",function() if selected then move({[selected]=true}) end end)
+    local confirm=false
+    manager:AddToggle("OwnToyDeleteConfirm",{Text="Allow delete buttons",Default=false,Callback=function(on) confirm=on end})
+    local function delete(models)
+        if not confirm then report("Enable Allow delete buttons first.");return end
+        local menu=ReplicatedStorage:FindFirstChild("MenuToys")
+        local remote=menu and menu:FindFirstChild("DestroyToy")
+        if not remote then report("Toy delete is unavailable.");return end
+        local count=0
+        for model in pairs(models) do if own(model) and count<40 then remote:FireServer(model);count+=1 end end
+        report(string.format("Requested deletion of %d own toys.",count))
+    end
+    manager:AddButton("Delete selected toy",function() if selected then delete({[selected]=true}) end end)
+    manager:AddInput("OwnToyGroupName",{Text="Group name",Default="My group",Finished=true,Callback=function(value)
+        groupName=string.sub(tostring(value),1,48);if groupName=="" then groupName="My group" end
+    end})
+    manager:AddButton("Add selected toy to named group",function()
+        if not own(selected) then return end
+        groups[groupName]=groups[groupName] or {};groups[groupName][selected]=true;report("Added to "..groupName..".")
+    end)
+    manager:AddButton("Add all movable own toys to named group",function()
+        local f=folder();if not f then return end
+        local set={};local count=0
+        for _,model in ipairs(f:GetChildren()) do if count<40 and movable(model) then set[model]=true;count+=1 end end
+        groups[groupName]=set;report(string.format("%s contains %d toys.",groupName,count))
+    end)
+    manager:AddButton("Move named group in front",function() move(groups[groupName] or {}) end)
+    manager:AddButton("Release named group",function() groups[groupName]=nil;report("Group cleared. Your toys are unchanged.") end)
+    manager:AddButton("Delete named group toys",function() delete(groups[groupName] or {}) end)
+    manager:AddLabel("Groups are session selections. Enter an existing group name to use it again.")
+    Hub.cleanup(function() table.clear(groups);table.clear(list) end)
+end)()
+end
+
+do
+(function()
+    local group=Tabs.Player:AddRightGroupbox("Map Locations")
+    local locations={Spawn=Vector3.new(4,-7,-3),["Safe Zone"]=Vector3.new(606,124,-101),
+        ["Farm House"]=Vector3.new(-234,83,-324),["Blue Safe House"]=Vector3.new(538,96,-372),
+        ["Big Cave"]=Vector3.new(17,-7,539),["Train Cave"]=Vector3.new(500,62,-307),
+        ["Mine Cave"]=Vector3.new(-254,-7,518),["Witch Safe House"]=Vector3.new(296,-4,494),
+        ["Red Safe House"]=Vector3.new(-516,-6,-162)}
+    local destination="Safe Zone";local custom="606, 124, -101"
+    local names={};for name in pairs(locations) do table.insert(names,name) end;table.sort(names)
+    group:AddDropdown("MapDestination",{Text="Location",Values=names,Default=table.find(names,destination),Callback=function(value) destination=value end})
+    local function teleport(position)
+        if Hub.safeZoneLoopActive then notify("Teleport","Turn off the safe-zone loop first.",4);return end
+        local char=Player.Character;local r=char and char:FindFirstChild("HumanoidRootPart")
+        local hum=char and char:FindFirstChildOfClass("Humanoid")
+        if not r or not hum or hum.Health<=0 then return end
+        if position.Y<=Workspace.FallenPartsDestroyHeight+8 then return end
+        r.CFrame=CFrame.new(position)*r.CFrame.Rotation;r.AssemblyLinearVelocity=Vector3.zero;r.AssemblyAngularVelocity=Vector3.zero
+    end
+    group:AddButton("Go to selected location",function() if locations[destination] then teleport(locations[destination]) end end)
+    group:AddInput("MapCustomCoordinates",{Text="Custom X, Y, Z",Default=custom,Finished=true,Callback=function(value) custom=value end})
+    group:AddButton("Go to custom coordinates",function()
+        local nums={};for n in tostring(custom):gmatch("[^,%s]+") do table.insert(nums,tonumber(n) or false) end
+        if #nums~=3 then return end
+        for _,n in ipairs(nums) do if not n or n~=n or math.abs(n)>100000 then return end end
+        teleport(Vector3.new(nums[1],nums[2],nums[3]))
+    end)
+    group:AddButton("Save current position as custom",function()
+        local r=Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
+        if r then Options.MapCustomCoordinates:SetValue(string.format("%.2f, %.2f, %.2f",r.Position.X,r.Position.Y,r.Position.Z)) end
+    end)
+    group:AddLabel("Named coordinates come from the reference script and may change with map updates.")
+end)()
+end
+
+do
+(function()
+    local group=Tabs.Player:AddRightGroupbox("Follow Player Position")
+    local target,enabled,side,distance,height=nil,false,"Behind",8,0
+    local picker;local elapsed=0
+    local function refresh()
+        local names={};for _,p in ipairs(Players:GetPlayers()) do if p~=Player then table.insert(names,p.Name) end end
+        table.sort(names);picker:SetValues(names)
+    end
+    picker=group:AddDropdown("SelfFollowPlayer",{Text="Follow player",Values={},Callback=function(value) target=Players:FindFirstChild(value) end})
+    group:AddButton("Refresh follow players",refresh)
+    refresh()
+    group:AddDropdown("SelfFollowSide",{Text="Position",Values={"Behind","Left","Right","Front"},Default=1,Callback=function(value) side=value end})
+    group:AddSlider("SelfFollowDistance",{Text="Distance",Default=8,Min=3,Max=40,Rounding=0,Callback=function(value) distance=value end})
+    group:AddSlider("SelfFollowHeight",{Text="Height offset",Default=0,Min=0,Max=20,Rounding=0,Callback=function(value) height=value end})
+    group:AddToggle("SelfFollowEnabled",{Text="Follow selected player",Default=false,Callback=function(on) enabled=on end})
+    group:AddLabel("Moves your character only. Pauses for seats, death or the safe-zone loop.")
+    Hub.connect(Players.PlayerAdded,function() Hub.queueRefresh("follow",refresh) end);Hub.connect(Players.PlayerRemoving,function(p) if p==target then target=nil end;Hub.queueRefresh("follow",refresh) end)
+    Hub.connect(RunService.Heartbeat,function(dt)
+        if not enabled or Hub.safeZoneLoopActive then return end
+        elapsed+=dt;if elapsed<0.1 then return end;elapsed=0
+        local char=Player.Character;local r=char and char:FindFirstChild("HumanoidRootPart")
+        local h=char and char:FindFirstChildOfClass("Humanoid")
+        local other=target and target.Character;local t=other and other:FindFirstChild("HumanoidRootPart")
+        local th=other and other:FindFirstChildOfClass("Humanoid")
+        if not r or not h or h.Health<=0 or h.SeatPart or not t or not th or th.Health<=0 then return end
+        local offset=side=="Left" and Vector3.new(-distance,height,0) or side=="Right" and Vector3.new(distance,height,0)
+            or side=="Front" and Vector3.new(0,height,-distance) or Vector3.new(0,height,distance)
+        local goal=t.CFrame*CFrame.new(offset)
+        if goal.Position.Y>Workspace.FallenPartsDestroyHeight+8 then r.CFrame=goal;r.AssemblyLinearVelocity=Vector3.zero end
+    end)
+end)()
+end
+
+do
+(function()
+    local group=Tabs.Customization:AddRightGroupbox("Anchor Appearance")
+    local fill,outline=Color3.fromRGB(0,85,255),Color3.fromRGB(0,170,255)
+    local fillAlpha,lineAlpha,labels=0.4,0.7,false
+    local active={}
+    local function style(h)
+        if not h.Parent then active[h]=nil;return end
+        h.FillColor=fill;h.OutlineColor=outline;h.FillTransparency=fillAlpha;h.OutlineTransparency=lineAlpha
+        local old=h:FindFirstChild("ArrivaAnchorLabel")
+        if labels and not old then
+            local part=h.Parent:IsA("BasePart") and h.Parent or h.Parent:FindFirstChildWhichIsA("BasePart",true)
+            if part then
+                local gui=Hub.new("BillboardGui",h);gui.Name="ArrivaAnchorLabel";gui.Adornee=part
+                gui.Size=UDim2.fromOffset(140,26);gui.StudsOffset=Vector3.new(0,3,0);gui.AlwaysOnTop=true
+                local text=Hub.new("TextLabel",gui);text.Size=UDim2.fromScale(1,1);text.BackgroundTransparency=1
+                text.Text="Anchored object";text.TextColor3=outline;text.TextSize=14
+            end
+        elseif old and not labels then old:Destroy() end
+        if old then local text=old:FindFirstChildOfClass("TextLabel");if text then text.TextColor3=outline end end
+    end
+    Hub.styleAnchorHighlight=function(h) active[h]=true;style(h) end
+    local function refresh() for h in pairs(active) do style(h) end end
+    local function color(value)
+        local hex=tostring(value):gsub("#","")
+        if #hex~=6 or not hex:match("^%x+$") then return nil end
+        return Color3.fromRGB(tonumber(hex:sub(1,2),16),tonumber(hex:sub(3,4),16),tonumber(hex:sub(5,6),16))
+    end
+    group:AddInput("AnchorFillHex",{Text="Fill hex",Default="0055FF",Finished=true,Callback=function(value) fill=color(value) or fill;refresh() end})
+    group:AddInput("AnchorOutlineHex",{Text="Outline hex",Default="00AAFF",Finished=true,Callback=function(value) outline=color(value) or outline;refresh() end})
+    group:AddSlider("AnchorFillOpacity",{Text="Fill transparency",Default=40,Min=0,Max=100,Rounding=0,Callback=function(value) fillAlpha=value/100;refresh() end})
+    group:AddSlider("AnchorLineOpacity",{Text="Outline transparency",Default=70,Min=0,Max=100,Rounding=0,Callback=function(value) lineAlpha=value/100;refresh() end})
+    group:AddToggle("AnchorLabels",{Text="Anchor labels",Default=false,Callback=function(on) labels=on;refresh() end})
+    Hub.cleanup(function() table.clear(active);Hub.styleAnchorHighlight=nil end)
+end)()
+end
+
+
+do
+(function()
+    local group=Tabs.Customization:AddRightGroupbox("Touch Action Buttons")
+    local gui=Hub.new("ScreenGui",Player:WaitForChild("PlayerGui"));gui.Name="ArrivaTouchActions";gui.ResetOnSpawn=false;gui.Enabled=false
+    Hub.touchActionsGui=gui
+    local palette=Hub.creativeUIPalette or {sidebar=Color3.fromRGB(31,31,31),card=Color3.fromRGB(33,33,33),text=Color3.fromRGB(237,237,237)}
+    local panel=Hub.new("Frame",gui);panel.Size=UDim2.fromOffset(224,164);panel.BackgroundColor3=palette.sidebar
+    local corner=Hub.new("UICorner",panel);corner.CornerRadius=UDim.new(0,12)
+    local position="Bottom right"
+    local function place()
+        panel.AnchorPoint=Vector2.new(position:find("right") and 1 or 0,position:find("Bottom") and 1 or 0)
+        panel.Position=UDim2.new(panel.AnchorPoint.X,panel.AnchorPoint.X==1 and -16 or 16,panel.AnchorPoint.Y,panel.AnchorPoint.Y==1 and -90 or 80)
+    end
+    local function button(text,y,action)
+        local b=Hub.new("TextButton",panel);b.Position=UDim2.fromOffset(8,y);b.Size=UDim2.fromOffset(208,44)
+        b.BackgroundColor3=palette.card;b.TextColor3=palette.text;b.TextSize=14;b.Text=text;b.TextWrapped=true;b.TextScaled=true
+        local padding=Hub.new("UIPadding",b);padding.PaddingLeft=UDim.new(0,10);padding.PaddingRight=UDim.new(0,10);padding.PaddingTop=UDim.new(0,4);padding.PaddingBottom=UDim.new(0,4)
+        local size=Hub.new("UITextSizeConstraint",b);size.MinTextSize=10;size.MaxTextSize=14
+        local c=Hub.new("UICorner",b);c.CornerRadius=UDim.new(0,8)
+        Hub.connect(b.Activated,function() if Hub.alive and not UserInputService:GetFocusedTextBox() then action() end end)
+    end
+    button("TP to aimed surface",8,function() if Hub.clickTeleport then Hub.clickTeleport() end end)
+    button("Anchor held object",60,function() if Hub.anchorHeldObject then Hub.anchorHeldObject(false) end end)
+    button("Spawn selected toy",112,function() if Hub.quickSpawnCreativeToy then Hub.quickSpawnCreativeToy() end end)
+    group:AddToggle("TouchActionsEnabled",{Text="Show action buttons",Default=false,Callback=function(on) gui.Enabled=on end})
+    group:AddDropdown("TouchActionsPosition",{Text="Action button corner",Values={"Bottom right","Bottom left","Top right","Top left"},Default=1,Callback=function(value) position=value;place() end})
+    group:AddLabel("TP uses the aimed surface. Spawn uses the Shape Toy Picker selection.")
+    place()
+end)()
+end
+
 ThemeGroup:AddDropdown("SidebarTheme", {
 	Text="Hub theme", Values={"Default","Midnight","Violet","Forest","Rose","Ocean","Amber","Custom"}, Default=1,
 	Callback=function(name)
@@ -8020,10 +9025,10 @@ do
 	end})
 end
 MenuGroup:AddButton("Unload", function() Library:Unload() end)
-MenuGroup:AddLabel("Emergency unload: End (restores tracked properties)", true)
+MenuGroup:AddLabel("Emergency unload: End by default; edit shortcuts in KeyBinds", true)
 Hub.connect(UserInputService.InputBegan, function(input, processed)
 	if processed or UserInputService:GetFocusedTextBox() then return end
-	if input.KeyCode == Enum.KeyCode.End then Library:Unload() end
+	if Hub.matchesKeybind("EmergencyUnloadKey", input, "End") then Library:Unload() end
 end)
 MenuGroup:AddButton({Text = "Diagnostics", Func = function()
 	local listeners, workers = 0, 0
@@ -8032,7 +9037,7 @@ MenuGroup:AddButton({Text = "Diagnostics", Func = function()
 	notify("Diagnostics", string.format("%d listeners / %d active workers. Config storage: %s. Touch API: %s.",
 		listeners, workers, Hub.storage and "available" or "unavailable", firetouchinterest and "available" or "unavailable"), 8)
 end})
-MenuGroup:AddLabel("Menu Keybind"):AddKeyPicker("MenuKeybind", { Default = "M", NoUI = true, Text = "Menu keybind" })
+Hub.keybindGroups.interface:AddLabel("Toggle menu"):AddKeyPicker("MenuKeybind", { Default = "M", NoUI = true, Text = "Menu keybind" })
 Library.ToggleKeybind = Options.MenuKeybind
 
 -- Session customization does not require executor file-storage support.
@@ -8063,8 +9068,24 @@ task.defer(function()
 	if Hub.refreshWhitelistUI then Hub.refreshWhitelistUI() end
 	Hub.lastSettings=Hub.captureSettings()
 	Hub.ready = true
+	Hub.env.ArrivaCoreStarting=nil
+	Hub.startupSeconds=os.clock()-Hub.startupBegan
 	if not Hub.configLoaded and not Hub.configLoadFailed then Hub.requestSave() end
 end)
+MenuGroup:AddSlider("StartupFeatureDelay",{Text="Saved-feature startup delay (seconds)",Default=3,Min=0,Max=10,Rounding=1,Callback=function() end})
+MenuGroup:AddButton({Text="Startup diagnostics",Func=function()
+    local listeners,workers=0,0
+    for connection in pairs(Hub.connections) do if connection.Connected then listeners+=1 end end
+    for thread in pairs(Hub.threads) do if coroutine.status(thread)~="dead" then workers+=1 end end
+    local progress=Hub.restoreProgress
+    local message=string.format("UI startup %.2fs, %d listeners, %d tracked workers.",Hub.startupSeconds or 0,listeners,workers)
+    if progress then message..=string.format(" Saved enabled features started: %d/%d%s.",progress.started,progress.total,progress.done and " (finished)" or " (starting)") end
+    if Hub.lastRestoreControl then message..=" Last restored: "..Hub.lastRestoreControl.."." end
+    if Hub.lastUIError then message..=" Last callback error: "..Hub.lastUIError:sub(1,180) end
+    if Hub.lastCallbackError then message..=" Last event error: "..Hub.lastCallbackError:sub(1,180) end
+    if Hub.lastWorkerError then message..=" Last worker error: "..Hub.lastWorkerError:sub(1,180) end
+    print("[Arriva startup] "..message);notify("Startup diagnostics",message,10)
+end})
 MenuGroup:AddButton({Text = "Save status", Func = function()
 	local message = "Storage: " .. (Hub.storage and "available" or "unavailable")
 		.. " | Last successful save: " .. (Hub.lastSaveAt or "none this session")
@@ -8086,8 +9107,7 @@ Hub.cleanup(function()
 	RemoveAllBoxes()
 	disconnectWatchers()
 	restorePaintParts()
-	if bvInstance then bvInstance:Destroy() end
-	if bgInstance then bgInstance:Destroy() end
+	if Hub.stopBlobFlight then Hub.stopBlobFlight() end
 	for _, item in ipairs(waterParts) do
 		pcall(function() item.part.CanCollide = item.originalCollide end)
 	end
