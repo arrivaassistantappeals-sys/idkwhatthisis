@@ -739,7 +739,7 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 ]=]
 	-- Arriva's custom sidebar presentation. No gameplay or remote operations.
 	local function createArrivaSidebar()
-		local UI = {Theme = {ReferenceDark = true}, tabs = {}, keybinds = {}, visible = true}
+		local UI = {Theme = {ToolDark = true}, tabs = {}, keybinds = {}, visible = true}
 		local player = game:GetService("Players").LocalPlayer
 		local playerService=game:GetService("Players")
 		local knownNames={}
@@ -1150,7 +1150,7 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 			local title=text(header,"ARRIVA CORE HUB 2.0",{Position=UDim2.fromOffset(78,8),Size=UDim2.new(1,-218,0,28),TextSize=22})
 			local titleFont=Font.fromEnum(Enum.Font.Ubuntu)
 			title.FontFace=Font.new(titleFont.Family,Enum.FontWeight.Bold,Enum.FontStyle.Italic)
-			local metrics=text(header,"FPS: --  |  Ping: --",{Name="ClientMetrics",
+			local metrics=text(header,"FPS: -- |  Ping: --",{Name="ClientMetrics",
 				Position=UDim2.fromOffset(80,37),Size=UDim2.new(1,-220,0,18),TextSize=12,TextColor3=colors.muted})
 			self.metricsGui=make("ScreenGui",gui.Parent,{Name="ArrivaFloatingMetrics",ResetOnSpawn=false,
 				IgnoreGuiInset=false,DisplayOrder=101,ZIndexBehavior=Enum.ZIndexBehavior.Sibling})
@@ -1311,7 +1311,7 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 				if not UI.active then activate(tab) end
 				return tab
 			end
-			function window.ModifyTheme() end -- The reference design intentionally keeps one palette.
+			function window.ModifyTheme() end -- The tool design intentionally keeps one palette.
 			function window:SetCloseCallback(callback) UI.onClose=callback end
 			return window
 		end
@@ -1521,7 +1521,7 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 		}
 		Hub.creativeUIPalette=colors
 		function UI:SetTheme(name)
-			if name=="Reference Dark" then name="Default" end
+			if name=="Tool Dark" then name="Default" end
 			local palette=palettes[name]
 			if name=="Custom" then
 				local bg,accent,fg=hex(custom.background),hex(custom.accent),hex(custom.text)
@@ -1663,7 +1663,7 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 		self:ensureSection()
 		local control = register(id, "Dropdown", info)
 		function control:normalize(value)
-			if id=="SidebarTheme" and value=="Reference Dark" then value="Default" end
+			if id=="SidebarTheme" and value=="Tool Dark" then value="Default" end
 			if not self.Multi then
 				if type(value) == "table" then value = value[1] end
 				if type(value) == "number" then value = self.Values[value] end
@@ -1814,6 +1814,17 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 		if not success then return false,tostring(reason) end
 		return true
 	end
+    function SaveManager:ResolveControlID(id)
+        if Library.controls[id] then return id end
+        -- Older imported controls used a nine-letter prefix; keep values for surviving controls.
+        if type(id)~="string" or id:sub(1,1)~="R" or not id:sub(1,9):match("^%a%a%a%a%a%a%a%a%a$") then return id end
+        local suffix=id:sub(10)
+        local aliases={BlackholeAura="PlayerAttractionAura",BlackholeStrength="PlayerAttractionStrength",
+            TornadoAura="PlayerTornadoAura",TornadoSpeed="PlayerTornadoSpeed"}
+        local mapped=aliases[suffix] or ("Tool"..suffix)
+        if Library.controls[mapped] then return mapped end
+        return id
+    end
 	function SaveManager:LoadJSON(content)
 		if type(content)~="string" then return false,"Configuration content is not text" end
 		content=content:gsub("^\239\187\191",""):gsub("%z+$","")
@@ -1831,8 +1842,9 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
         for _,record in ipairs(data.objects) do if type(record)=="table" and record.idx=="DetailedESPEnabled" and record.value==true then legacyDetailed=true end end
 		for _,record in ipairs(data.objects) do
 			if type(record)=="table" then
-				local control=Library.controls[record.idx]
-				if control and not self.ignored[record.idx] then
+				local id=self:ResolveControlID(record.idx)
+                local control=Library.controls[id]
+				if control and not self.ignored[id] then
 					local value=record.value
 					if control.Type=="KeyPicker" then value=record.key or record.value end
 					local applied,reason=pcall(function() control:SetValue(value) end)
@@ -1897,13 +1909,11 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 			if not ok then warn("[Arriva config load] " .. tostring(err)) end
 			Library:Notify({Title = ok and "Settings loaded" or "Load error", Description = ok and "Your saved settings were restored." or tostring(err),Time=10})
 		end})
-		group:AddLabel("Autosave starts after loading finishes. Existing settings are protected if loading fails. Save settings replaces them only when you choose it.")
 	end
 	function ThemeManager:SetLibrary(value) self.library = value end
 	function ThemeManager:SetFolder(value) self.folder = value end
 	function ThemeManager:ApplyToTab(tab)
 		local group = tab:AddRightGroupbox("Appearance")
-		group:AddLabel("Border and window customization")
 		group:AddToggle("SidebarRainbowBorder", {Text = "Accent glow", Default = true,
 			Callback = function(on) Rayfield:SetRainbowEnabled(on) end})
 		group:AddSlider("SidebarBorderThickness",{Text="Accent glow thickness",Default=1.5,Min=1,Max=4,Rounding=1,
@@ -1943,20 +1953,21 @@ local Window = Library:CreateWindow({
 })
 
 local Tabs = {
-	Defense = Window:AddTab("Defense", "shield"),
-	Whitelist = Window:AddTab("Whitelist", "user-round-check"),
-	AntiLag = Window:AddTab("Anti Lag", "activity"),
-	Customization = Window:AddTab("Menu Customization", "palette"),
-	Updates = Window:AddTab("Update Log", "history"),
-	Notifications = Window:AddTab("Notifications", "bell"),
-	KeyBinds   = Window:AddTab("KeyBinds", "keyboard"),
-	Target = Window:AddTab("Loop Players", "crosshair"),
-	Aura = Window:AddTab("Auras", "align-vertical-space-around"),
-	Fun = Window:AddTab("Fun", "heart"),
-	Grab = Window:AddTab("Grab Settings", "hand"),
-	Player = Window:AddTab("Player Options", "user"),
-	Misc = Window:AddTab("Misc", "box"),
-	["UI Settings"] = Window:AddTab("UI Settings", "settings"),
+    Player = Window:AddTab("Player", "user"),
+    Defense = Window:AddTab("Defense", "shield"),
+    Target = Window:AddTab("Loop Players", "crosshair"),
+    AntiLag = Window:AddTab("Anti Lag", "activity"),
+    Blob = Window:AddTab("Blobman", "box"),
+    Aura = Window:AddTab("Player Auras", "sparkles"),
+    Grab = Window:AddTab("Grab options", "hand"),
+    Fun = Window:AddTab("Objects & Toys", "box"),
+    Visual = Window:AddTab("Visuals", "eye"),
+    Misc = Window:AddTab("World & Travel", "globe"),
+    Whitelist = Window:AddTab("Protected Players", "user-round-check"),
+    KeyBinds = Window:AddTab("KeyBinds", "keyboard"),
+    Notifications = Window:AddTab("Notifications", "bell"),
+    Customization = Window:AddTab("Appearance", "palette"),
+    ["UI Settings"] = Window:AddTab("Settings", "settings"),
 }
 
 -- Central shortcut settings. Existing option IDs remain compatible with saved settings.
@@ -2015,7 +2026,6 @@ Hub.keybindGroups.interface:AddButton({Text = "Reset hub shortcuts", Func = func
         if option then option:SetValue(definition.default) end
     end
 end})
-Hub.keybindGroups.interface:AddLabel("Click a shortcut and press a key to change it; Escape cancels. Right Shift remains a menu fallback. Action keys pause while typing or assigning a shortcut. Click teleport and quick spawn also need their feature toggles enabled.")
 -- End central shortcut settings.
 
 --// Core Variables
@@ -2037,7 +2047,7 @@ local setNetworkOwnerEvent = grabEventsFolder:FindFirstChild("SetNetworkOwner")
 local extendGrabLineRemoteEvent = grabEventsFolder:FindFirstChild("ExtendGrabLine")
 local ragdollRemoteEvent = CE:FindFirstChild("RagdollRemote")
 local playerScriptsFolder = Player:WaitForChild("PlayerScripts", 10)
--- Anti Lag resolves and watches CharacterAndBeamMove when enabled; no cached startup reference.
+-- Anti Lag resolves and watches CharacterAndBeamMove when enabled; no cached startup tool.
 local spawnedInToysFolder = Workspace:FindFirstChild(Player.Name .. "SpawnedInToys")
 Hub.connect(Workspace.ChildAdded, function(child)
 	if child.Name == Player.Name .. "SpawnedInToys" then spawnedInToysFolder = child end
@@ -2631,14 +2641,12 @@ do
 		Callback=function(value) fpsLimit=value;reset(fpsState) end})
 	group:AddSlider("HealthSustainSeconds",{Text="Sustained spike duration (seconds)",Default=3,Min=1,Max=15,Rounding=0,
 		Callback=function(value) holdSeconds=value;reset(pingState);reset(fpsState) end})
-	group:AddLabel("Alerts have a 30-second repeat cooldown. Automatic disconnect below affects only you.")
 	group:AddToggle("HealthDisconnectOnPing",{Text="Disconnect me on sustained high ping",Default=false,
 		Callback=function(on) disconnectOn=on;updateConnection() end})
 	group:AddSlider("HealthDisconnectPingLimit",{Text="Disconnect ping threshold (ms)",Default=1500,Min=250,Max=10000,Rounding=0,
 		Callback=function(value) disconnectLimit=value;disconnectBad=0;disconnectSent=false end})
 	group:AddSlider("HealthDisconnectDelay",{Text="Disconnect after high ping (seconds)",Default=10,Min=3,Max=60,Rounding=0,
 		Callback=function(value) disconnectSeconds=value;disconnectBad=0;disconnectSent=false end})
-	group:AddLabel("A completely frozen client cannot run this check. High ping does not identify the cause or an abusive player.")
 	Hub.cleanup(function() if connection then connection:Disconnect();connection=nil end end)
 end
 
@@ -2646,170 +2654,165 @@ end
 local DefenseGroup = Tabs.Defense:AddLeftGroupbox("Defense Main")
 local DefenseExtra = Tabs.Defense:AddRightGroupbox("Extra Defense")
 
--- Remotes
-local CharacterEvents = ReplicatedStorage:FindFirstChild("CharacterEvents")
-local Struggle = CharacterEvents and CharacterEvents:FindFirstChild("Struggle")
-local StopVelocity = ReplicatedStorage:FindFirstChild("GameCorrectionEvents")
-	and ReplicatedStorage.GameCorrectionEvents:FindFirstChild("StopAllVelocity")
+-- Anti Grab: react to actual held-state changes, with bounded local freezing.
+do
+    local enabled, recoverMovement = false, false
+    local featureConnections, characterConnections = {}, {}
+    local heldConnection, frozenCharacter, freezeConnection
+    local savedAnchors = {}
+    local generation, bindGeneration = 0, 0
+    local frozenAt, nextAttempt = 0, 0
+    local heldValue
+    local freezeUsed = false
 
--- State
-local antiGrabEnabled = false
-local connections = {}
-local freezeConn
-local hardFreeze = false
-local savedCF
+    local function disconnect(list)
+        for _, connection in ipairs(list) do connection:Disconnect(); Hub.connections[connection] = nil end
+        table.clear(list)
+    end
+    local function listen(list, signal, callback)
+        local connection = Hub.connect(signal, callback)
+        table.insert(list, connection)
+        return connection
+    end
+    local function release()
+        generation += 1
+        if freezeConnection then freezeConnection:Disconnect(); Hub.connections[freezeConnection] = nil; freezeConnection = nil end
+        for part, anchored in pairs(savedAnchors) do
+            pcall(function() if part.Parent then part.Anchored = anchored end end)
+        end
+        table.clear(savedAnchors)
+        frozenCharacter = nil
+    end
+    Hub.releaseGrabProtection = release
 
---------------------------------------------------
--- Helpers
---------------------------------------------------
+    local function recover(char)
+        if not recoverMovement or not enabled then return end
+        local ticket = generation
+        task.delay(0.2, function()
+            if not enabled or not recoverMovement or generation ~= ticket or Player.Character ~= char
+                or (heldValue and heldValue.Value) or Hub.safeZoneLoopActive then return end
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            local ragdolled = hum and hum:FindFirstChild("Ragdolled")
+            if not hum or hum.Health <= 0 or hum.SeatPart or (ragdolled and ragdolled.Value) then return end
+            if hum.PlatformStand then
+                hum.PlatformStand = false
+                hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+            end
+        end)
+    end
 
-local function disconnectAll()
-	for _, c in ipairs(connections) do
-		pcall(function() c:Disconnect() end)
-	end
-	table.clear(connections)
+    local function detect()
+        if not enabled or os.clock() < nextAttempt then return end
+        local char = Player.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if not root or not hum or hum.Health <= 0 then return end
+        -- Keep deliberate seating and the safe-zone controller independent.
+        if hum.SeatPart or Hub.safeZoneLoopActive then return end
+        nextAttempt = os.clock() + 0.25
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
+        -- Resolve optional remotes at use time; map loading can replace them.
+        local events = ReplicatedStorage:FindFirstChild("CharacterEvents")
+        local struggle = events and events:FindFirstChild("Struggle")
+        local ragdoll = events and events:FindFirstChild("RagdollRemote")
+        local correction = ReplicatedStorage:FindFirstChild("GameCorrectionEvents")
+        local stop = correction and correction:FindFirstChild("StopAllVelocity")
+        for _, request in ipairs({{struggle, Player}, {ragdoll, root, 0}, {stop}}) do
+            if request[1] then pcall(function() Hub.fire(table.unpack(request)) end) end
+        end
+        if freezeUsed then return end
+        freezeUsed = true
+        release()
+        frozenCharacter, frozenAt = char, os.clock()
+        local cframe = root.CFrame
+        for _, part in ipairs(char:GetChildren()) do
+            if part:IsA("BasePart") then savedAnchors[part] = part.Anchored; part.Anchored = true end
+        end
+        freezeConnection = Hub.connect(RunService.Heartbeat, function()
+            if not enabled or Player.Character ~= char or not root.Parent or hum.Health <= 0
+                or hum.SeatPart or Hub.safeZoneLoopActive or os.clock() - frozenAt >= 2 then release(); return end
+            root.AssemblyLinearVelocity = Vector3.zero
+            root.AssemblyAngularVelocity = Vector3.zero
+            root.CFrame = cframe
+        end)
+    end
+
+    local function bindCharacter(char)
+        bindGeneration += 1
+        local ticket = bindGeneration
+        disconnect(characterConnections)
+        freezeUsed = false
+        release()
+        if not enabled or not char then return end
+        local observedOwners = {}
+        local function inspect(object)
+            if not enabled or ticket ~= bindGeneration or Player.Character ~= char then return end
+            if object.Name == "PartOwner" and object:IsA("StringValue")
+                and object.Parent == char:FindFirstChild("Head") and not observedOwners[object] then
+                observedOwners[object] = true
+                local function changed()
+                    if enabled and ticket == bindGeneration and object.Parent and object.Value ~= "" and object.Value ~= Player.Name then detect() end
+                end
+                listen(characterConnections, object:GetPropertyChangedSignal("Value"), changed)
+                changed()
+            elseif (object.Name == "HumanoidRootPart" or object:IsA("Humanoid")) and heldValue and heldValue.Value then detect() end
+        end
+        listen(characterConnections, char.DescendantAdded, inspect)
+        for _, object in ipairs(char:GetDescendants()) do inspect(object) end
+        if heldValue and heldValue.Value then detect() end
+    end
+
+    local function bindHeld(value)
+        if heldConnection then heldConnection:Disconnect(); Hub.connections[heldConnection] = nil; heldConnection = nil end
+        heldValue = value and value:IsA("BoolValue") and value or nil
+        if not enabled or not heldValue then return end
+        local previous = heldValue.Value
+        heldConnection = Hub.connect(heldValue:GetPropertyChangedSignal("Value"), function()
+            if not enabled then return end
+            local held = heldValue.Value
+            if held then
+                if not previous then freezeUsed = false; generation += 1 end
+                detect()
+            else
+                freezeUsed = false
+                release()
+                if previous then recover(Player.Character) end
+            end
+            previous = held
+        end)
+        if previous then detect() end
+    end
+
+    DefenseGroup:AddToggle("AntiGrabObsidian", {Text = "Anti Grab", Default = false, Callback = function(on)
+        enabled = on
+        nextAttempt = 0
+        disconnect(featureConnections)
+        bindCharacter(nil)
+        bindHeld(nil)
+        if not on then return end
+        listen(featureConnections, RunService.Heartbeat, function()
+            if heldValue and heldValue.Value then detect() end
+        end)
+        listen(featureConnections, Player.CharacterAdded, bindCharacter)
+        listen(featureConnections, Player.CharacterRemoving, function() bindCharacter(nil) end)
+        listen(featureConnections, Player.ChildAdded, function(child) if child.Name == "IsHeld" then bindHeld(child) end end)
+        listen(featureConnections, Player.ChildRemoved, function(child) if child == heldValue then bindHeld(nil); release() end end)
+        bindCharacter(Player.Character)
+        bindHeld(Player:FindFirstChild("IsHeld"))
+    end})
+    DefenseGroup:AddToggle("RecoverMovementAfterGrab", {Text = "Recover movement after Anti Grab releases", Default = false,
+        Callback = function(on) recoverMovement = on end})
+    DefenseGroup:AddButton({Text = "Release local grab freeze", Func = function() freezeUsed = true; release() end})
+    Hub.cleanup(function()
+        enabled, recoverMovement = false, false
+        disconnect(featureConnections)
+        bindCharacter(nil)
+        bindHeld(nil)
+        release()
+        Hub.releaseGrabProtection = nil
+    end)
 end
-
-local function anchorAll(char, state)
-	for _, p in ipairs(char:GetChildren()) do
-		if p:IsA("BasePart") then
-			if state then Hub.backup(p, {"Anchored"}); p.Anchored = true else Hub.restore(p) end
-		end
-	end
-end
-
---------------------------------------------------
--- Hard freeze (stronger than Anchored spam)
---------------------------------------------------
-
-local function freezeChar(char)
-	local hrp = char:FindFirstChild("HumanoidRootPart")
-	if not hrp then return end
-
-	savedCF = hrp.CFrame
-	hardFreeze = true
-
-	if freezeConn then freezeConn:Disconnect() end
-	freezeConn = Hub.connect(RunService.Heartbeat, function()
-		if hardFreeze and hrp then
-			hrp.AssemblyLinearVelocity = Vector3.zero
-			hrp.AssemblyAngularVelocity = Vector3.zero
-			hrp.CFrame = savedCF
-		end
-	end)
-end
-
-local function unfreezeChar(char)
-	hardFreeze = false
-	if freezeConn then
-		freezeConn:Disconnect()
-		freezeConn = nil
-	end
-	if char then
-		anchorAll(char, false)
-	end
-end
-
---------------------------------------------------
--- Core grab breaker
---------------------------------------------------
-
-local grabGeneration = 0
-local function onGrabDetected()
-	if not antiGrabEnabled then return end
-	local char = Player.Character
-	local root = char:FindFirstChild("HumanoidRootPart")
-	local ragdollRemoteEvent = CE:FindFirstChild("RagdollRemote")
-	if not char then return end
-	grabGeneration += 1
-	local generation = grabGeneration
-	pcall(function()
-		if Struggle then Hub.fire(Struggle, Player) end
-		if ragdollRemote then Hub.fire(ragdollRemote, root, 0) end
-		if StopVelocity then Hub.fire(StopVelocity) end
-	end)
-	anchorAll(char, true)
-	freezeChar(char)
-	task.spawn(function()
-		local deadline = os.clock() + 2
-		repeat task.wait(0.05)
-			local held = Player:FindFirstChild("IsHeld")
-			if not held or not held.Value then break end
-		until not antiGrabEnabled or not char.Parent or os.clock() >= deadline or generation ~= grabGeneration
-		if generation == grabGeneration then unfreezeChar(char) end
-	end)
-end
-
---------------------------------------------------
--- Character hook
---------------------------------------------------
-
-local function hookCharacter(char)
-	local head = char:WaitForChild("Head", 5)
-	if not antiGrabEnabled or Player.Character ~= char then return end
-	local hum = char:WaitForChild("Humanoid", 5)
-	if not (head and hum) then return end
-
-	-- detect grab instantly
-	table.insert(connections,
-		Hub.connect(head.ChildAdded, function(child)
-			if antiGrabEnabled and child.Name == "PartOwner" then
-				onGrabDetected()
-			end
-		end)
-	)
-
-	-- prevent non-blob seating
-	table.insert(connections,
-		Hub.connect(hum.Changed, function(prop)
-			if prop == "Sit" and hum.Sit then
-				if not (hum.SeatPart and hum.SeatPart.Parent
-					and hum.SeatPart.Parent.Name == "CreatureBlobman") then
-					hum.Sit = false
-				end
-			end
-		end)
-	)
-
-	-- already held case
-	local isHeld = Player:FindFirstChild("IsHeld")
-	if isHeld and isHeld.Value then
-		onGrabDetected()
-	end
-end
-
---------------------------------------------------
--- UI Toggle
---------------------------------------------------
-
-
-
-DefenseGroup:AddToggle("AntiGrabObsidian", {
-	Text = "Anti Grab",
-	Default = false,
-	Callback = function(on)
-		Hub.requestSave()
-		antiGrabEnabled = on
-		disconnectAll()
-		unfreezeChar(Player.Character)
-
-		if on then
-			if Player.Character then
-				hookCharacter(Player.Character)
-			end
-
-			table.insert(connections,
-				Hub.connect(Player.CharacterAdded, function(char)
-					task.wait(0.1)
-					hookCharacter(char)
-				end)
-			)
-		else
-			unfreezeChar(Player.Character)
-		end
-	end
-})
-
 
 Hub.blobParts = {}
 local function anti(Descendant)
@@ -2871,34 +2874,50 @@ DefenseGroup:AddToggle("AntiBlobmanToggle", {
 	end
 })
 
-local antiExplodeT=false
-local antiExplodeConnection
-local function antiExplodeF()
-	antiExplodeT = true
-	if antiExplodeConnection then antiExplodeConnection:Disconnect() end
-	antiExplodeConnection = Hub.connect(workspace.ChildAdded, function(model)
-		if not antiExplodeT or not model:IsA("BasePart") or model.Name ~= "Part" then return end
-		local char = Player.Character
-		local hrp = char and char:FindFirstChild("HumanoidRootPart")
-		if not hrp or (model.Position - hrp.Position).Magnitude > 20 then return end
-		local original = hrp.Anchored
-		hrp.Anchored = true
-		task.delay(0.15, function() if hrp.Parent then hrp.Anchored = original end end)
-		Hub.explosionAnchor = {hrp, original}
-	end)
+-- Bounded explosion freeze; overlapping events share one original anchor snapshot.
+do
+    local enabled, connection, state = false, nil, nil
+    local nextFreeze = 0
+    local function release()
+        if state then
+            local old = state; state = nil
+            pcall(function() if old.root.Parent then old.root.Anchored = old.original end end)
+        end
+    end
+    local function inspect(model)
+        if not enabled or not model:IsA("BasePart") or model.Name ~= "Part" then return end
+        local char = Player.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if not root or not hum or hum.Health <= 0 or hum.SeatPart or Hub.safeZoneLoopActive
+            or Hub.blobFlightActive or (model.Position-root.Position).Magnitude > 20 then return end
+        root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
+        -- Anti Grab owns its own anchor snapshot; never capture or restore it here.
+        if Toggles.AntiGrabObsidian and Toggles.AntiGrabObsidian.Value then return end
+        local now = os.clock()
+        if state then
+            if state.root == root then state.untilTime = math.min(state.started+0.3, now+0.15) end
+            return
+        end
+        if root.Anchored or now < nextFreeze then return end
+        state = {root=root, character=char, original=root.Anchored, started=now, untilTime=now+0.15}
+        root.Anchored = true
+    end
+    Hub.connect(RunService.Heartbeat,function()
+        if state and (not enabled or Player.Character ~= state.character or os.clock() >= state.untilTime
+            or Hub.safeZoneLoopActive or Hub.blobFlightActive) then
+            release(); nextFreeze = os.clock()+0.25
+        end
+    end)
+    DefenseGroup:AddToggle("AntiExplosionToggle", {Text="Anti Explosion",Default=false,Callback=function(on)
+        enabled=on
+        if connection then connection:Disconnect();Hub.connections[connection]=nil;connection=nil end
+        release()
+        if on then connection=Hub.connect(Workspace.ChildAdded,inspect) end
+    end})
+    Hub.cleanup(function() enabled=false;release() end)
 end
-Hub.cleanup(function()
-	if Hub.explosionAnchor then Hub.explosionAnchor[1].Anchored = Hub.explosionAnchor[2] end
-end)
-
-DefenseGroup:AddToggle("AntiExplosionToggle", {
-	Text="Anti Explosion",
-	Default=false,
-	Callback=function(on)
-		Hub.requestSave()
-		if on then antiExplodeF() else antiExplodeT=false; if antiExplodeConnection then antiExplodeConnection:Disconnect(); antiExplodeConnection=nil end end
-	end
-})
+-- End explosion protection
 
 do
 	-- Anti Burn: local extinguisher visibility restoration.
@@ -3044,36 +3063,110 @@ do
 
 end
 
+-- Ground-validated recovery points shared by Anti Void and motion protection.
+function Hub.validSelfRecoveryGround(saved, char)
+    if not saved or saved.character ~= char or Player.Character ~= char then return false end
+    local part = saved.part
+    return part and part.Parent and part:IsDescendantOf(Workspace) and part.Anchored and part.CanCollide
+        and not Hub.playerOf(part) and part.CFrame == saved.groundCFrame
+        and (part.Position - saved.groundPosition).Magnitude < 1
+end
+function Hub.captureSelfRecoveryGround(char, root)
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = {char}
+    params.RespectCanCollide = true
+    params.IgnoreWater = true
+    local hit = Workspace:Raycast(root.Position, Vector3.new(0, -8, 0), params)
+    if hit and hit.Normal.Y >= 0.6 and hit.Instance:IsA("BasePart") and hit.Instance.Anchored
+        and hit.Instance.CanCollide and not Hub.playerOf(hit.Instance) then
+        return {character = char, part = hit.Instance, groundPosition = hit.Instance.Position, groundCFrame = hit.Instance.CFrame, cframe = root.CFrame}
+    end
+end
+
 do
-	-- Anti-Void
-	local antiVoidConn
-	local VOID_THRESHOLD = -50
-	local SAFE_HEIGHT = 100
-
-	DefenseGroup:AddToggle("AntiVoidToggle", {
-		Text = "Anti Void",
-		Default = false,
-		Callback = function(on)
-			Hub.requestSave()
-			if on then
-				if antiVoidConn then antiVoidConn:Disconnect() end
-				antiVoidConn = Hub.connect(RunService.Heartbeat, function()
-					local char = Player.Character
-					if char and char.PrimaryPart then
-						local pos = char.PrimaryPart.Position
-						if pos.Y < VOID_THRESHOLD then
-							local safePos = Vector3.new(pos.X, pos.Y + SAFE_HEIGHT, pos.Z)
-							char:SetPrimaryPartCFrame(CFrame.new(safePos))
-							char.PrimaryPart.AssemblyLinearVelocity = Vector3.zero
-						end
-					end
-				end)
-			else
-				if antiVoidConn then antiVoidConn:Disconnect() antiVoidConn = nil end
-			end
-		end
-	})
-
+    local enabled, connection = false, nil
+    local saved, character
+    local lastSample, lastRecovery = -math.huge, -math.huge
+    local recoveries = 0
+    local status = DefenseGroup:AddLabel("Anti Void is off. No recovery point recorded.")
+    local function finiteVector(value)
+        for _, number in ipairs({value.X, value.Y, value.Z}) do
+            if number ~= number or math.abs(number) == math.huge then return false end
+        end
+        return true
+    end
+    local function current()
+        local char = Player.Character
+        if character ~= char then character = char; saved = nil end
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local held = Player:FindFirstChild("IsHeld")
+        if not root or not hum or hum.Health <= 0 or hum.SeatPart or root.Anchored
+            or (held and held.Value) or Hub.safeZoneLoopActive then return nil end
+        return char, root
+    end
+    local function record()
+        local char, root = current()
+        if not root or not finiteVector(root.Position) or not finiteVector(root.AssemblyLinearVelocity)
+            or not finiteVector(root.AssemblyAngularVelocity) or root.AssemblyLinearVelocity.Magnitude > 50
+            or root.AssemblyAngularVelocity.Magnitude > 20 then return false end
+        local candidate = Hub.captureSelfRecoveryGround(char, root)
+        if not candidate then return false end
+        saved = candidate
+        status:SetText("Safe ground recorded for this character.")
+        return true
+    end
+    local function recover()
+        local char, root = current()
+        if not root or os.clock() - lastRecovery < 1 or not Hub.validSelfRecoveryGround(saved, char) then return false end
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
+        root.CFrame = saved.cframe
+        lastRecovery = os.clock()
+        recoveries += 1
+        status:SetText(string.format("Returned to safe ground %d time(s).", recoveries))
+        return true
+    end
+    local function sample()
+        if not enabled then return end
+        local char, root = current()
+        if not root then return end
+        if saved and not Hub.validSelfRecoveryGround(saved, char) then saved = nil end
+        local threshold = math.max(-50, Workspace.FallenPartsDestroyHeight + 25)
+        if not finiteVector(root.Position) or root.Position.Y < threshold then
+            if not recover() and not saved then status:SetText("No valid safe ground recorded; cannot recover yet.") end
+            return
+        end
+        if os.clock() - lastSample >= 0.2 then
+            lastSample = os.clock()
+            if root.Position.Y > threshold + 5 then record() end
+        end
+    end
+    Hub.sampleVoidProtection = sample
+    DefenseGroup:AddToggle("AntiVoidToggle", {Text = "Anti Void (last safe ground)", Default = false, Callback = function(on)
+        enabled = on
+        if connection then connection:Disconnect(); Hub.connections[connection] = nil; connection = nil end
+        saved, character = nil, Player.Character
+        lastSample = -math.huge
+        if on then
+            status:SetText("Anti Void: waiting for grounded, stable movement.")
+            sample()
+            connection = Hub.connect(RunService.Heartbeat, sample)
+        else status:SetText("Anti Void is off. No recovery point recorded.") end
+    end})
+    DefenseGroup:AddButton({Text = "Record safe ground here", Func = function()
+        if not record() then notify("Recovery", "Stand still on solid anchored ground outside seats and grabs first.", 5) end
+    end})
+    DefenseGroup:AddButton({Text = "Return to last safe ground", Func = function()
+        if not recover() then notify("Recovery", "No valid recovery point, or recovery is paused by seating, a grab or the safe-zone loop.", 5) end
+    end})
+    Hub.connect(Player.CharacterRemoving, function() saved = nil; character = nil end)
+    Hub.cleanup(function()
+        enabled = false; saved = nil
+        if connection then connection:Disconnect(); Hub.connections[connection] = nil; connection = nil end
+        Hub.sampleVoidProtection = nil
+    end)
 end
 
 -- Optional self-only recovery. No target, ownership or grab remotes.
@@ -3094,26 +3187,25 @@ do
         if char~=lastCharacter then lastCharacter=char;lastGround=nil end
         local root=char and char:FindFirstChild("HumanoidRootPart")
         local hum=char and char:FindFirstChildOfClass("Humanoid")
-        if not root or not hum or hum.Health<=0 or hum.SeatPart or Hub.safeZoneLoopActive then return end
+        local held=Player:FindFirstChild("IsHeld")
+        if not root or not hum or hum.Health<=0 or hum.SeatPart or root.Anchored
+            or (held and held.Value) or Hub.safeZoneLoopActive then return end
         local velocity,rotation=root.AssemblyLinearVelocity,root.AssemblyAngularVelocity
-        local unsafe=not vectorOK(velocity) or not vectorOK(rotation)
+        local unsafe=not vectorOK(root.Position) or not vectorOK(velocity) or not vectorOK(rotation)
             or velocity.Magnitude>linearLimit or rotation.Magnitude>angularLimit
         local now=os.clock()
         if unsafe then
             root.AssemblyLinearVelocity=Vector3.zero;root.AssemblyAngularVelocity=Vector3.zero
-            if lastGround and now-lastAction>=1 then
-                root.CFrame=lastGround;lastAction=now;recoveries+=1
+            if Hub.validSelfRecoveryGround(lastGround,char) and now-lastAction>=1 then
+                root.CFrame=lastGround.cframe;lastAction=now;recoveries+=1
             end
             return
         end
         if now-lastSample<0.25 or not vectorOK(root.Position) then return end
         lastSample=now
         if root.Position.Y<=Workspace.FallenPartsDestroyHeight+12 then return end
-        local params=RaycastParams.new();params.FilterType=Enum.RaycastFilterType.Exclude
-        params.FilterDescendantsInstances={char};params.RespectCanCollide=true;params.IgnoreWater=true
-        local hit=Workspace:Raycast(root.Position,Vector3.new(0,-8,0),params)
-        if hit and hit.Normal.Y>=0.5 and hit.Instance:IsA("BasePart") and hit.Instance.Anchored
-            and not Hub.playerOf(hit.Instance) then lastGround=root.CFrame end
+        local candidate=velocity.Magnitude<=50 and rotation.Magnitude<=20 and Hub.captureSelfRecoveryGround(char,root)
+        if candidate then lastGround=candidate end
     end
     Hub.sampleMotionProtection=sample
     group:AddToggle("LocalMotionProtection",{Text="Extreme velocity recovery",Default=false,Callback=function(on)
@@ -3121,7 +3213,6 @@ do
     end})
     group:AddSlider("LocalMotionLinearLimit",{Text="Recovery speed limit",Default=350,Min=100,Max=2000,Rounding=0,Callback=function(value) linearLimit=value end})
     group:AddSlider("LocalMotionAngularLimit",{Text="Recovery spin limit",Default=100,Min=20,Max=500,Rounding=0,Callback=function(value) angularLimit=value end})
-    group:AddLabel("Stops extreme motion on your character and returns to its last grounded position when available. Leave off for intentional high-speed movement. Pauses while seated or using the safe-zone loop.")
     local conn
     conn=Hub.connect(RunService.Heartbeat,function() sample() end)
     group:AddButton("Motion recovery status",function() notify("Motion protection",string.format("Ground recovery used %d times this session.",recoveries),4) end)
@@ -3152,7 +3243,6 @@ do
         if hum then conn=Hub.connect(hum.Seated,release);release(hum.SeatPart~=nil,hum.SeatPart) end
     end
     DefenseGroup:AddToggle("LocalUnwantedSeatProtection",{Text="Jump out of unwanted seats",Default=false,Callback=function(on) enabled=on;bind(Player.Character) end})
-    DefenseGroup:AddLabel("Jumps out of ordinary seats locally. Your own Blobman seating is allowed so Gucci can run.")
     Hub.connect(Player.CharacterAdded,function(char)
         task.defer(function()
             if not enabled then return end
@@ -3745,6 +3835,8 @@ DefenseExtra:AddToggle("AntiInputLag", {
 	end
 })
 
+
+
 -- Anti-Kick System
 do
 	local enabled, generation = false, 0
@@ -4033,6 +4125,7 @@ end
 -- Auto Attacker
 local AutoAttacker = false
 local AttackMode = "Kill"
+local attackerFlingStrength = 100
 local headConnection
 DefenseExtra:AddToggle("AutoAttacker", {
 	Text = "Auto Attacker",
@@ -4053,6 +4146,12 @@ DefenseExtra:AddDropdown("AttackerMode", {
 	Callback = function(Value)
 		AttackMode = Value
 	end,
+})
+
+DefenseExtra:AddSlider("AutoAttackerFlingStrength", {
+    Text = "Auto Attacker fling strength",
+    Default = 100, Min = 25, Max = 2000, Rounding = 0,
+    Callback = function(value) attackerFlingStrength = value end,
 })
 
 function CheckNetworkOwnerShipOnPlayer(potentialPlayer, condition)
@@ -4185,7 +4284,7 @@ local function hookAttackerCharacter(boundCharacter)
 									local lookAtCFrame = lookAt(LocalPlayer.Character.HumanoidRootPart.Position, otherHumanoidRootPart.Position)
 									local bodyVelocity = Instance.new("BodyVelocity", otherPlayer.Character.HumanoidRootPart)
 									bodyVelocity.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
-									bodyVelocity.Velocity = Vector3.new(lookAtCFrame.lookVector.X, 0.5, lookAtCFrame.lookVector.Z) * 100
+									bodyVelocity.Velocity = Vector3.new(lookAtCFrame.lookVector.X, 0.5, lookAtCFrame.lookVector.Z) * attackerFlingStrength
 									wait()
 									bodyVelocity:Destroy()
 									destroyGrabLineEvent:FireServer(otherHumanoidRootPart)
@@ -4248,7 +4347,7 @@ Hub.cleanup(Hub.clearAttackerBindings)
 
 -- Player Tab
 local PlayerView = Tabs.Player:AddLeftGroupbox("View & Movement")
-local PlayerESP = Tabs.Player:AddRightGroupbox("ESP")
+local PlayerESP = Tabs.Visual:AddLeftGroupbox("Player ESP")
 local PlayerPerf = Tabs.Player:AddRightGroupbox("Performance")
 
 do
@@ -4409,7 +4508,7 @@ Hub.connect(Player.CharacterAdded, function(char)
 end)
 
 Hub.connect(UserInputService.JumpRequest, function()
-	if infJump then
+	if infJump and not Hub.blobFlightActive then
 		local character = Player.Character
 		if character and character:FindFirstChildOfClass("Humanoid") then
 			character:FindFirstChildOfClass("Humanoid"):ChangeState(Enum.HumanoidStateType.Jumping)
@@ -4468,6 +4567,9 @@ do
 (function()
     local group=PlayerESP
     local enabled,through,alpha,color=false,true,0.8,Color3.new(1,1,1)
+    local showHP,showUsername,showDisplayName,boldText=true,true,true,true
+    -- tool Visual/ESP: independently configurable fill and outline.
+    local outlineColor,outlineAlpha=Color3.new(1,1,1),0.2
     local entries={};local elapsed=0
     local function clear(p) local e=entries[p];if e then e.gui:Destroy();e.highlight:Destroy();entries[p]=nil end end
     local function update()
@@ -4489,14 +4591,26 @@ do
                     local highlight=Hub.new("Highlight",char);highlight.Adornee=char
                     e={gui=gui,text=text,highlight=highlight,character=char};entries[p]=e
                 end
-                e.gui.AlwaysOnTop=through;e.text.TextColor3=Color3.new(1,1,1);e.highlight.FillColor=color;e.highlight.OutlineColor=Color3.new(1,1,1)
-                e.highlight.FillTransparency=alpha;e.highlight.OutlineTransparency=0.2
+                e.gui.AlwaysOnTop=through;e.text.TextColor3=Color3.new(1,1,1);e.highlight.FillColor=color;e.highlight.OutlineColor=outlineColor
+                e.highlight.FillTransparency=alpha;e.highlight.OutlineTransparency=outlineAlpha
                 e.highlight.DepthMode=through and Enum.HighlightDepthMode.AlwaysOnTop or Enum.HighlightDepthMode.Occluded
-                e.text.Text=string.format("%s (@%s)\nHP %.0f",p.DisplayName,p.Name,hum.Health)
+                local name=""
+                if showDisplayName then name=p.DisplayName end
+                if showUsername then name=showDisplayName and (name .. " (@" .. p.Name .. ")") or ("@" .. p.Name) end
+                local lines={}
+                if name~="" then table.insert(lines,name) end
+                if showHP then table.insert(lines,string.format("HP %.0f",hum.Health)) end
+                e.text.Text=table.concat(lines,"\n")
+                e.text.Visible=#lines>0
+                e.text.Font=boldText and Enum.Font.GothamBold or Enum.Font.Gotham
             else clear(p) end
         end end
     end
     group:AddToggle("NicknameESP",{Text="ESP",Default=false,Callback=function(on) enabled=on;update() end})
+    group:AddToggle("DetailedESPShowHP",{Text="Show HP",Default=true,Callback=function(on) showHP=on;update() end})
+    group:AddToggle("DetailedESPShowUsername",{Text="Show username",Default=true,Callback=function(on) showUsername=on;update() end})
+    group:AddToggle("DetailedESPShowDisplayName",{Text="Show display name",Default=true,Callback=function(on) showDisplayName=on;update() end})
+    group:AddToggle("DetailedESPBoldText",{Text="Bold text",Default=true,Callback=function(on) boldText=on;update() end})
     group:AddToggle("DetailedESPThroughWalls",{Text="Visible through walls",Default=true,Callback=function(on) through=on;update() end})
     group:AddSlider("DetailedESPTransparency",{Text="Fill transparency",Default=80,Min=0,Max=100,Rounding=0,Callback=function(value) alpha=value/100;update() end})
     group:AddInput("DetailedESPColor",{Text="Fill color hex",Default="FFFFFF",Finished=true,Callback=function(value)
@@ -4504,7 +4618,14 @@ do
             color=Color3.fromRGB(tonumber(hex:sub(1,2),16),tonumber(hex:sub(3,4),16),tonumber(hex:sub(5,6),16));update()
         end
     end})
-    group:AddLabel("Player ESP appearance. PCLD View remains a separate map detector overlay.")
+    group:AddSlider("DetailedESPOutlineTransparency",{Text="Outline transparency",Default=20,Min=0,Max=100,Rounding=0,
+        Callback=function(value) outlineAlpha=value/100;update() end})
+    group:AddInput("DetailedESPOutlineColor",{Text="Outline color hex",Default="FFFFFF",Finished=true,Callback=function(value)
+        local hex=tostring(value):gsub("#","")
+        if #hex==6 and hex:match("^%x+$") then
+            outlineColor=Color3.fromRGB(tonumber(hex:sub(1,2),16),tonumber(hex:sub(3,4),16),tonumber(hex:sub(5,6),16));update()
+        end
+    end})
     Hub.connect(RunService.Heartbeat,function(dt) elapsed+=dt;if elapsed>=0.5 then elapsed=0;update() end end)
     Hub.connect(Players.PlayerRemoving,clear)
     Hub.cleanup(function() enabled=false;for p in pairs(entries) do clear(p) end end)
@@ -4649,12 +4770,13 @@ PlayerView:AddToggle("SelfNoclipToggle", {
 
 -- Target Tab
 local TargetGroup = Tabs.Target:AddLeftGroupbox("Target Interaction")
-local BlobGroup = Tabs.Target:AddRightGroupbox("Blobman Control")
+local BlobGroup = Tabs.Blob:AddLeftGroupbox("Controls")
 local WhitelistGroup = Tabs.Whitelist:AddLeftGroupbox("Protected Players")
 local TargetNotificationGroup = Tabs.Notifications:AddLeftGroupbox("Target Alerts")
 
 local SelectedPlayer = nil -- Primary selection for one-shot actions.
 Hub.selectedTargets = {}
+Hub.targetIdentities = {}
 Hub.targetCursors = {}
 -- A stopped worker must not resume when the same toggle is enabled again.
 Hub.targetLoopRuns = {}
@@ -4663,6 +4785,7 @@ function Hub.beginTargetLoop(key, enabled)
     if previous then previous.enabled = false end
     local run = enabled and {enabled = true} or previous or {enabled = false}
     Hub.targetLoopRuns[key] = run
+    if Hub.loopNotice then Hub.loopNotice("loops", enabled and "Loop enabled" or "Loop disabled", key, key .. tostring(enabled)) end
     return function() return Hub.alive and run.enabled and Hub.targetLoopRuns[key] == run end,
         function() return Hub.targetLoopRuns[key] == run end
 end
@@ -4683,23 +4806,68 @@ function Hub.getBlobSeat()
     if blob and blob.Name == "CreatureBlobman" and blob:IsDescendantOf(Workspace) then return seat end
     return nil
 end
+function Hub.getLoopBlobSeat()
+    local seat = Hub.getBlobSeat()
+    local folder = Workspace:FindFirstChild(Player.Name .. "SpawnedInToys")
+    return seat and folder and seat.Parent.Parent == folder and seat or nil
+end
 function Hub.isSelectedTarget(player)
     return player ~= nil and Hub.selectedTargets[player.UserId] == player
 end
+function Hub.hasTrackedTargets()
+    return next(Hub.targetIdentities) ~= nil
+end
+function Hub.reconcileTargetIdentities(excluded)
+    local online = {}
+    SelectedPlayer = nil
+    for _, player in ipairs(Players:GetPlayers()) do
+        local identity = Hub.targetIdentities[player.UserId]
+        if identity and player ~= Player and player ~= excluded and player.Parent == Players then
+            identity.name = player.Name
+            identity.label = (player.DisplayName or player.Name) .. " (" .. player.Name .. ")"
+            online[player.UserId] = player
+            SelectedPlayer = SelectedPlayer or player
+        end
+    end
+    Hub.selectedTargets = online
+end
 function Hub.setSelectedTargets(selection)
-    local chosen = {}
-    -- Accept legacy single selections as well as multi-select maps and arrays.
+    if Hub.refreshingTargetSelector then return end
+    local identities = {}
     if type(selection) == "string" then selection = {selection} end
     for key, value in pairs(type(selection) == "table" and selection or {}) do
         local label = type(key) == "number" and value or (value and key or nil)
         local player = type(label) == "string" and getPlayerFromSelection(label) or nil
-        if player and player ~= Player then chosen[player.UserId] = player end
+        if player and player ~= Player then
+            identities[player.UserId] = {name = player.Name, label = label}
+        elseif type(label) == "string" then
+            for id, identity in pairs(Hub.targetIdentities) do
+                if identity.label == label or identity.label .. " [offline]" == label then identities[id] = identity; break end
+            end
+        end
     end
-    Hub.selectedTargets = chosen
-    SelectedPlayer = nil
+    Hub.targetIdentities = identities
+    Hub.reconcileTargetIdentities()
+    if Hub.refreshTargetSelector then Hub.refreshTargetSelector() end
+end
+function Hub.targetSelectionState()
+    local values, selected = {}, {}
+    local online, offline = 0, 0
     for _, player in ipairs(Players:GetPlayers()) do
-        if chosen[player.UserId] then SelectedPlayer = player; break end
+        if player ~= Player and player.Parent == Players then
+            local label = (player.DisplayName or player.Name) .. " (" .. player.Name .. ")"
+            table.insert(values, label)
+            if Hub.selectedTargets[player.UserId] == player then selected[label] = true; online += 1 end
+        end
     end
+    for id, identity in pairs(Hub.targetIdentities) do
+        if not Hub.selectedTargets[id] then
+            local label = identity.label .. " [offline]"
+            table.insert(values, label); selected[label] = true; offline += 1
+        end
+    end
+    table.sort(values)
+    return values, selected, online, offline
 end
 function Hub.nextLoopTarget(key, dwell)
     local candidates = {}
@@ -4733,51 +4901,202 @@ local loopKillEnabledAll = false
 local function autoblob(active)
     active = active or function() return Hub.alive end
     if not active() then return false end
-    if Hub.getBlobSeat() then return true end
-	local plr = Player
-	local char = plr.Character
-	local hrp = char and char:FindFirstChild("HumanoidRootPart")
-	local hum = char and char:FindFirstChild("Humanoid")
+    if Hub.getLoopBlobSeat() then return true end
+    if Hub.blobAcquireBusy then return false end
+    Hub.blobAcquireBusy = true
+    local ok, result = xpcall(function()
+        local char = Player.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local held = Player:FindFirstChild("IsHeld")
+        if not root or not hum or hum.Health <= 0 or root.Anchored or (held and held.Value) or Hub.safeZoneLoopActive then return false end
+        local function current()
+            local currentHeld = Player:FindFirstChild("IsHeld")
+            return Hub.alive and active() and Player.Character == char and root.Parent == char and hum.Health > 0
+                and not root.Anchored and not (currentHeld and currentHeld.Value) and not Hub.safeZoneLoopActive
+        end
+        local deadline = os.clock() + 2
+        repeat
+            if not current() then return false end
+            local folder = Workspace:FindFirstChild(Player.Name .. "SpawnedInToys")
+            local blob = folder and folder:FindFirstChild("CreatureBlobman")
+            if blob then
+                local seat = blob:FindFirstChild("VehicleSeat")
+                if seat then
+                    if seat.Occupant and seat.Occupant ~= hum then return false end
+                    if hum.SeatPart and hum.SeatPart ~= seat then
+                        hum.Sit = false
+                        hum:ChangeState(Enum.HumanoidStateType.Jumping)
+                        task.wait(0.1)
+                        if not current() then return false end
+                    end
+                    if not current() or seat.Parent ~= blob or blob.Parent ~= folder then return false end
+                    if not hum.SeatPart then
+                        root.CFrame = seat.CFrame + Vector3.new(0, 1, 0)
+                        root.AssemblyLinearVelocity = Vector3.zero
+                        root.AssemblyAngularVelocity = Vector3.zero
+                        seat:Sit(hum)
+                    end
+                    if hum.SeatPart == seat then
+                        Hub.preferredBlob = blob
+                        return true
+                    end
+                end
+            elseif not Hub.blobSpawnPending and os.clock() >= (Hub.nextBlobSpawn or 0) then
+                local menu = ReplicatedStorage:FindFirstChild("MenuToys")
+                local spawn = menu and menu:FindFirstChild("SpawnToyRemoteFunction")
+                if not spawn then return false end
+                Hub.blobSpawnPending = true
+                Hub.nextBlobSpawn = os.clock() + 10
+                task.spawn(function()
+                    if current() then pcall(function() Hub.invoke(spawn, "CreatureBlobman", root.CFrame, Vector3.zero) end) end
+                    Hub.blobSpawnPending = false
+                end)
+            end
+            task.wait(0.15)
+        until os.clock() >= deadline
+        return false
+    end, debug.traceback)
+    Hub.blobAcquireBusy = false
+    if not ok and Hub.loopNotice then Hub.loopNotice("warnings", "Blobman acquisition failed", tostring(result), "acquireError") end
+    return ok and result == true
+end
 
-	if not hrp or not hum or hum.Health <= 0 then return false end
-
-	local folderName = plr.Name .. "SpawnedInToys"
-	local folder = workspace:FindFirstChild(folderName)
-	local blob = folder and folder:FindFirstChild("CreatureBlobman")
-
-	if not blob then
-		task.spawn(function()
-			pcall(function()
-                if not active() or Player.Character ~= char then return end
-				Hub.invoke(ReplicatedStorage.MenuToys.SpawnToyRemoteFunction, "CreatureBlobman", hrp.CFrame, Vector3.zero)
-			end)
-		end)
-
-		if not folder then
-			folder = workspace:WaitForChild(folderName, 5)
-		end
-
-		if folder then
-			blob = folder:WaitForChild("CreatureBlobman", 5)
-		end
-	end
-
-	if not active() or Player.Character ~= char or not hrp.Parent or hum.Health <= 0 then return false end
-	if blob then
-		local seat = blob:WaitForChild("VehicleSeat", 5)
-		if seat and active() and Player.Character == char and hrp.Parent then
-			local t = tick()
-			repeat
-				if not hum.SeatPart then
-					hrp.CFrame = seat.CFrame + Vector3.new(0, 1, 0)
-					hrp.Velocity = Vector3.zero
-					seat:Sit(hum)
-				end
-				RunService.Heartbeat:Wait()
-			until hum.SeatPart == seat or tick() - t > 1.5 or Player.Character ~= char or not seat.Parent or not active()
-		end
-	end
-    return Hub.getBlobSeat() ~= nil
+-- Managed Blobman seating, idle stabilization and categorized loop notifications.
+do
+    Hub.loopNoticePrefs = {targets = true, ready = false, seats = true, warnings = true, loops = false, sounds = false}
+    Hub.loopNoticeTimes = {}
+    function Hub.loopNotice(kind, title, message, key)
+        if not Hub.alive or not Hub.loopNoticePrefs[kind] then return end
+        local token = kind .. ":" .. (key or title)
+        local now = os.clock()
+        if now < (Hub.loopNoticeTimes[token] or -math.huge) then return end
+        Hub.loopNoticeTimes[token] = now + (kind == "warnings" and 15 or 3)
+        Library:Notify({Title = title, Description = message, Time = kind == "warnings" and 6 or 4})
+        if Hub.loopNoticePrefs.sounds then
+            local sound = Hub.new("Sound", Workspace)
+            sound.SoundId = "rbxassetid://4590662766"
+            sound.Volume = 0.4
+            sound:Play()
+            Debris:AddItem(sound, 3)
+        end
+    end
+    local notices = Tabs.Notifications:AddRightGroupbox("Loop & Blobman Alerts")
+    for _, entry in ipairs({
+        {"LoopNotifyTargets", "Selected players leave, return or respawn", "targets"},
+        {"LoopNotifyReady", "Selected player ready for loops", "ready"},
+        {"LoopNotifySeats", "Blobman seat lost and recovered", "seats"},
+        {"LoopNotifyWarnings", "Blobman retry warnings", "warnings"},
+        {"LoopNotifyState", "Loop enabled and disabled", "loops"},
+        {"LoopNotifySounds", "Play sounds for loop alerts", "sounds"},
+    }) do
+        local key = entry[3]
+        notices:AddToggle(entry[1], {Text = entry[2], Default = Hub.loopNoticePrefs[key],
+            Callback = function(on) Hub.loopNoticePrefs[key] = on end})
+    end
+    notices:AddButton({Text = "Preview loop notification", Func = function()
+        Library:Notify({Title = "Blobman seat recovered", Description = "Preview: your enabled loops can continue.", Time = 4})
+    end})
+    Hub.autoReseatBlob = true
+    Hub.blobReseatInterval = 3
+    Hub.heavyBlobEnabled = false
+    function Hub.blobLoopRequired()
+        for _, key in ipairs({"LoopKickToggle2", "DualHandLoopKick"}) do
+            local run = Hub.targetLoopRuns[key]
+            if run and run.enabled then return true end
+        end
+        return false
+    end
+    local hold, attachment, heldRoot, holdPosition, lastSeat
+    local nextAttempt, elapsed = 0, 0
+    local hadSeat, waiting = false, false
+    local status = BlobGroup:AddLabel("Blobman loops are idle.")
+    local function clearHeavy()
+        for _, object in pairs({hold, attachment}) do
+            Hub.instances[object] = nil
+            Hub.assetTargets[object] = nil
+            object:Destroy()
+        end
+        hold, attachment, heldRoot, holdPosition, lastSeat = nil, nil, nil, nil, nil
+    end
+    function Hub.updateHeavyBlobman()
+        local char = Player.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local seat = Hub.getBlobSeat()
+        if not Hub.heavyBlobEnabled or not seat or not root or not hum or hum.Health <= 0
+            or Hub.blobFlightActive or (Hub.isBlobFlightActive and Hub.isBlobFlightActive()) then clearHeavy(); return end
+        if heldRoot ~= root or lastSeat ~= seat or not hold or not hold.Parent then
+            clearHeavy()
+            heldRoot, lastSeat, holdPosition = root, seat, root.Position
+            attachment = Hub.new("Attachment", root)
+            attachment.Name = "ArrivaHeavyBlobAttachment"
+            hold = Hub.new("AlignPosition", root)
+            hold.Name = "ArrivaHeavyBlobHold"
+            hold.Mode = Enum.PositionAlignmentMode.OneAttachment
+            hold.Attachment0 = attachment
+            hold.ApplyAtCenterOfMass = true
+            hold.MaxForce = 500000
+            hold.MaxVelocity = 50
+            hold.Responsiveness = 40
+        end
+        local moving = hum.MoveDirection.Magnitude > 0.05
+        -- Deliberate hub teleports establish a new idle position.
+        if moving or (root.Position - holdPosition).Magnitude > 8 then holdPosition = root.Position end
+        hold.Enabled = not moving
+        hold.Position = holdPosition
+    end
+    function Hub.sampleBlobController()
+        if not Hub.alive then return end
+        Hub.updateHeavyBlobman()
+        local required = Hub.blobLoopRequired()
+        local seat = Hub.getLoopBlobSeat()
+        if not required then hadSeat, waiting = false, false; status:SetText("Blobman loops are idle."); return end
+        if seat then
+            if waiting then Hub.loopNotice("seats", "Blobman seat recovered", "Enabled Blobman loops can continue.", "seatRestored") end
+            hadSeat, waiting = true, false
+            status:SetText("Your Blobman seat is ready.")
+            return
+        end
+        if hadSeat then Hub.loopNotice("seats", "Blobman seat lost", "Blobman loops are paused while seating is restored.", "seatLost") end
+        hadSeat, waiting = false, true
+        status:SetText(Hub.autoReseatBlob and "Waiting for Blobman seating; automatic retries enabled." or "Waiting for Blobman seating; auto reseat is off.")
+        if not Hub.autoReseatBlob or Hub.blobAcquireBusy or os.clock() < nextAttempt then return end
+        local char = Player.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local held = Player:FindFirstChild("IsHeld")
+        if not hum or hum.Health <= 0 or (held and held.Value) or Hub.safeZoneLoopActive then return end
+        nextAttempt = os.clock() + Hub.blobReseatInterval
+        task.spawn(function()
+            local function active()
+                return Hub.alive and Hub.autoReseatBlob and Hub.blobLoopRequired() and Player.Character == char
+            end
+            local seated = autoblob(active)
+            if active() and not seated then
+                Hub.loopNotice("warnings", "Still waiting for Blobman", "Reseating will retry. The toy may be loading, occupied or unavailable.", "seatRetry")
+            end
+        end)
+    end
+    BlobGroup:AddToggle("HeavyBlobman", {Text = "Heavy Blobman (idle hold)", Default = false,
+        Callback = function(on) Hub.heavyBlobEnabled = on; if not on then clearHeavy() end end})
+    BlobGroup:AddToggle("AutoReseatBlobLoops", {Text = "Auto reseat for Blobman loops", Default = true,
+        Callback = function(on) Hub.autoReseatBlob = on; nextAttempt = 0 end})
+    BlobGroup:AddSlider("BlobReseatInterval", {Text = "Reseat retry interval (seconds)", Default = 3, Min = 3, Max = 10, Rounding = 0,
+        Callback = function(value) Hub.blobReseatInterval = value end})
+    BlobGroup:AddButton({Text = "Stop Blobman loops", Func = function()
+        for _, key in ipairs({"LoopKickToggle2", "DualHandLoopKick"}) do if Toggles[key] then Toggles[key]:SetValue(false) end end
+    end})
+    local connection = Hub.connect(RunService.Heartbeat, function(dt)
+        elapsed += dt
+        if elapsed >= 0.2 then elapsed = 0; Hub.sampleBlobController() end
+    end)
+    Hub.connect(Player.CharacterRemoving, function() clearHeavy(); hadSeat = false; waiting = true; nextAttempt = 0 end)
+    Hub.cleanup(function()
+        Hub.autoReseatBlob, Hub.heavyBlobEnabled = false, false
+        connection:Disconnect(); Hub.connections[connection] = nil
+        clearHeavy()
+        Hub.sampleBlobController, Hub.updateHeavyBlobman = nil, nil
+    end)
 end
 
 TargetGroup:AddDropdown("KickPlayerDropdown", {
@@ -4790,31 +5109,99 @@ TargetGroup:AddDropdown("KickPlayerDropdown", {
 	end,
 })
 
-TargetGroup:AddLabel("Loops cycle through selected players. One-shot actions use the first selected player in the server list.")
 
-TargetGroup:AddButton({
-	Text = "refresh player list",
-	Func = function()
-		Options.KickPlayerDropdown:SetValues(getPlayerList())
-	end
-})
+TargetGroup:AddButton({Text = "Refresh player list", Func = function()
+    if Hub.refreshTargetSelector then Hub.refreshTargetSelector() end
+end})
 
+-- Target identity lifecycle: retain explicit selections across same-server departures.
 do
-    local function refreshTargetSelector()
-        if Options.KickPlayerDropdown then Options.KickPlayerDropdown:SetValues(getPlayerList()) end
+    Hub.rememberLoopTargets = true
+    local roster = {}
+    local stateLabel = TargetGroup:AddLabel("No selected players.")
+    function Hub.refreshTargetSelector()
+        if not Options.KickPlayerDropdown then return end
+        local values, selected, online, offline = Hub.targetSelectionState()
+        Hub.refreshingTargetSelector = true
+        local ok, err = pcall(function()
+            Options.KickPlayerDropdown:SetValues(values)
+            Options.KickPlayerDropdown:SetValue(selected)
+        end)
+        Hub.refreshingTargetSelector = false
+        stateLabel:SetText(string.format("Tracked: %d online, %d offline. Loops wait for eligible characters.", online, offline))
+        if not ok then warn("[Arriva target selector] " .. tostring(err)) end
     end
-    Hub.connect(Players.PlayerAdded,function() Hub.queueRefresh("mainPlayerSelector",refreshTargetSelector) end)
-    Hub.connect(Players.PlayerRemoving,function(person)
-        Hub.selectedTargets[person.UserId] = nil
-        if SelectedPlayer==person then
-            SelectedPlayer=nil
-            for _, remaining in ipairs(Players:GetPlayers()) do
-                if Hub.isSelectedTarget(remaining) then SelectedPlayer=remaining;break end
+    local function refresh()
+        Hub.queueRefresh("mainPlayerSelector", Hub.refreshTargetSelector)
+    end
+    local function watchCharacter(person, char)
+        if not Hub.targetIdentities[person.UserId] then return end
+        task.spawn(function()
+            local deadline = os.clock() + 5
+            while Hub.alive and person.Character == char and person.Parent == Players and Hub.targetIdentities[person.UserId] do
+                if Hub.loopTargetReady(person, char) then
+                    Hub.loopNotice("ready", "Selected player ready", person.Name .. " has an eligible character; enabled loops can continue.", "ready" .. person.UserId)
+                    return
+                end
+                if os.clock() >= deadline then return end
+                task.wait(0.25)
             end
+        end)
+    end
+    local function watch(person)
+        if person == Player or roster[person] then return end
+        local entry = {seen = person.Character ~= nil}
+        roster[person] = entry
+        entry.connection = Hub.connect(person.CharacterAdded, function(char)
+            if entry.seen and Hub.targetIdentities[person.UserId] then
+                Hub.loopNotice("targets", "Selected player respawned", person.Name .. " respawned. Waiting for their character to become eligible.", "respawn" .. person.UserId)
+            end
+            entry.seen = true
+            Hub.reconcileTargetIdentities()
+            watchCharacter(person, char)
+            refresh()
+        end)
+        if person.Character then watchCharacter(person, person.Character) end
+    end
+    for _, person in ipairs(Players:GetPlayers()) do watch(person) end
+    Hub.connect(Players.PlayerAdded, function(person)
+        local remembered = Hub.targetIdentities[person.UserId] ~= nil
+        Hub.reconcileTargetIdentities()
+        watch(person)
+        if remembered then Hub.loopNotice("targets", "Selected player returned", person.Name .. " rejoined this server; their selection is restored.", "return" .. person.UserId) end
+        refresh()
+    end)
+    Hub.connect(Players.PlayerRemoving, function(person)
+        local remembered = Hub.targetIdentities[person.UserId] ~= nil
+        local entry = roster[person]
+        roster[person] = nil
+        if entry then entry.connection:Disconnect(); Hub.connections[entry.connection] = nil end
+        if remembered and not Hub.rememberLoopTargets then Hub.targetIdentities[person.UserId] = nil end
+        Hub.reconcileTargetIdentities(person)
+        if remembered then Hub.loopNotice("targets", "Selected player left", person.Name .. (Hub.rememberLoopTargets and " left. Selection retained for a return to this server." or " left. Their selection was removed."), "left" .. person.UserId) end
+        refresh()
+    end)
+    TargetGroup:AddToggle("RememberLoopTargets", {Text = "Remember selected players who leave", Default = true, Callback = function(on)
+        Hub.rememberLoopTargets = on
+        if not on then
+            for id in pairs(Hub.targetIdentities) do if not Hub.selectedTargets[id] then Hub.targetIdentities[id] = nil end end
+            refresh()
         end
-        Hub.queueRefresh("mainPlayerSelector",refreshTargetSelector)
+    end})
+    TargetGroup:AddButton({Text = "Clear tracked players", Func = function()
+        Hub.targetIdentities = {}
+        Hub.selectedTargets = {}
+        Hub.targetCursors = {}
+        SelectedPlayer = nil
+        Hub.refreshTargetSelector()
+    end})
+    Hub.refreshTargetSelector()
+    Hub.cleanup(function()
+        for _, entry in pairs(roster) do entry.connection:Disconnect(); Hub.connections[entry.connection] = nil end
+        table.clear(roster)
     end)
 end
+-- End target identity lifecycle.
 
 TargetGroup:AddToggle("LoopKickToggle", {
 	Text = "Kick (spam grab)",
@@ -4921,191 +5308,130 @@ TargetGroup:AddToggle("LoopKickToggle", {
 
 
 -- Loop Kill selected players
-TargetGroup:AddToggle("LoopKillToggle", {
-	Text = "Loop kill",
-	Default = false,
-	Callback = function(on)
-        local running, ownsRun = Hub.beginTargetLoop("LoopKillToggle", on)
-		Hub.requestSave()
-		loopKillEnabled = on
-		if on then
-			local target = SelectedPlayer
-			if not target then
-				notify("System", "Select target first", 3)
-				Toggles.LoopKillToggle:SetValue(false)
-				return
-			end
-
-			task.spawn(function()
-				local RS = ReplicatedStorage
-				local GE = RS:WaitForChild("GrabEvents")
-
-				while running() do
-                    target = Hub.nextLoopTarget("loopKill")
-                    if not target then task.wait(0.2); continue end
-
-					local myChar = Player.Character
-					local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
-					local tChar = Hub.canHarm(target) and target.Character or nil
-					local tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")
-					local tHum = tChar and tChar:FindFirstChild("Humanoid")
-					local tHead = tChar and tChar:FindFirstChild("Head")
-
-					if tRoot and tHum and tHead and myRoot then
-						local currentPos = myRoot.CFrame
-
-						for _ = 0, 50 do
-							if not running() or not Hub.isSelectedTarget(target) or not Hub.loopTargetReady(target, tChar) or not tRoot.Parent then break end
-
-							applyNoclip(myChar)
-							SNOWship(tRoot)
-
-							-- Check if SNOWship was successful
-							if not running() or (CheckNetworkOwnerShipOnPlayer and CheckNetworkOwnerShipOnPlayer(target)) or tRoot.AssemblyLinearVelocity.Magnitude > 500 then
-								Hub.fire(GE.DestroyGrabLine, tRoot)
-								CreateSkyVelocity(tRoot)
-								break
-							end
-
-							task.wait()
-                            if not running() or not Hub.isSelectedTarget(target) or not Hub.loopTargetReady(target, tChar) or Player.Character ~= myChar then break end
-
-							-- Teleport to target
-							if tRoot.Position.Y <= -12 then
-								if Hub.canAffect(tRoot) then myRoot.CFrame = CFrame.new(tRoot.Position + Vector3.new(0, 5, -15)) end
-							else
-								if Hub.canAffect(tRoot) then myRoot.CFrame = CFrame.new(tRoot.Position + Vector3.new(0, -10, -10)) end
-							end
-							myRoot.Velocity = Vector3.zero
-
-							-- Apply death state
-							if Hub.canAffect(tHum) then tHum.BreakJointsOnDeath = false end
-							if Hub.canAffect(tHum) then tHum:ChangeState(Enum.HumanoidStateType.Dead) end
-							if Hub.canAffect(tHum) then tHum.Jump = true end
-							if Hub.canAffect(tHum) then tHum.Sit = false end
-						end
-
-                        if not ownsRun() then return end
-						if myRoot then
-							restoreCollision()
-							myRoot.CFrame = currentPos
-							myRoot.Velocity = Vector3.zero
-						end
-
-						task.wait(0.2)
-					else
-						task.wait(0.5)
-					end
-				end
-
-                if not ownsRun() then return end
-				restoreCollision()
-				local char = Player.Character
-				local root = char and char:FindFirstChild("HumanoidRootPart")
-				if root then root.Velocity = Vector3.zero end
-			end)
-		else
-			loopKillEnabled = false
-		end
-	end
-})
-
--- Loop Kill All
-TargetGroup:AddToggle("LoopKillToggleAll", {
-	Text = "Loop kill All",
-	Default = false,
-	Callback = function(on)
-        local running, ownsRun = Hub.beginTargetLoop("LoopKillToggleAll", on)
-		Hub.requestSave()
-		loopKillEnabledAll = on
-		if on then
-			task.spawn(function()
-				local RS = ReplicatedStorage
-				local PS = Players
-				local GE = RS:WaitForChild("GrabEvents")
-
-				while running() do
-					local myChar = Player.Character
-					local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
-
-					if myRoot then
-						local currentPos = myRoot.CFrame
-
-						for _, target in pairs(PS:GetPlayers()) do
-							if not running() then break end
-							if not Hub.canHarm(target) then continue end
-
-							if not Hub.canHarm(target) or not target.Character then
-								continue
-							end
-
-							local tChar = Hub.canHarm(target) and target.Character or nil
-							local tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")
-							local tHum = tChar and tChar:FindFirstChild("Humanoid")
-							local tHead = tChar and tChar:FindFirstChild("Head")
-
-							-- Check if player is not in their plot
-							local inPlotValue = target:FindFirstChild("InPlot")
-							local isInPlot = inPlotValue and inPlotValue.Value
-
-							if tRoot and tHum and tHead and tHum.Health > 0 and not isInPlot then
-								for _ = 0, 50 do
-									if not running() or not Hub.loopTargetReady(target, tChar) or not tRoot.Parent then break end
-
-									applyNoclip(myChar)
-									SNOWship(tRoot)
-
-									-- Check if SNOWship was successful
-									if not running() or (CheckNetworkOwnerShipOnPlayer and CheckNetworkOwnerShipOnPlayer(target)) or tRoot.AssemblyLinearVelocity.Magnitude > 500 then
-										Hub.fire(GE.DestroyGrabLine, tRoot)
-										CreateSkyVelocity(tRoot)
-										break
-									end
-
-									task.wait()
-                            if not running() or not Hub.loopTargetReady(target, tChar) or Player.Character ~= myChar then break end
-
-									-- Teleport to target
-									if tRoot.Position.Y <= -12 then
-										if Hub.canAffect(tRoot) then myRoot.CFrame = CFrame.new(tRoot.Position + Vector3.new(0, 5, -15)) end
-									else
-										if Hub.canAffect(tRoot) then myRoot.CFrame = CFrame.new(tRoot.Position + Vector3.new(0, -10, -10)) end
-									end
-									myRoot.Velocity = Vector3.zero
-
-									-- Apply death state
-									if Hub.canAffect(tHum) then tHum.BreakJointsOnDeath = false end
-									if Hub.canAffect(tHum) then tHum:ChangeState(Enum.HumanoidStateType.Dead) end
-									if Hub.canAffect(tHum) then tHum.Jump = true end
-									if Hub.canAffect(tHum) then tHum.Sit = false end
-								end
-
-								task.wait()
-							end
-						end
-
-                        if not ownsRun() then return end
-						if myRoot then
-							restoreCollision()
-							myRoot.CFrame = currentPos
-							myRoot.Velocity = Vector3.zero
-						end
-					end
-
-					task.wait(5)
-				end
-
-                if not ownsRun() then return end
-				restoreCollision()
-				local char = Player.Character
-				local root = char and char:FindFirstChild("HumanoidRootPart")
-				if root then root.Velocity = Vector3.zero end
-			end)
-		else
-			loopKillEnabledAll = false
-		end
-	end
-})
+-- Shared lifecycle for selected/all kill modes: bounded attempts and immediate cleanup.
+do
+    local activeRun
+    local function cleanupAttempt(run)
+        if not run or not run.attempt then return end
+        local attempt = run.attempt
+        run.attempt = nil
+        for part, original in pairs(attempt.collisions) do
+            pcall(function()
+                if part.Parent then
+                    if noclipEnabled then part.CanCollide = false else part.CanCollide = original end
+                end
+            end)
+        end
+        if Player.Character == attempt.character and attempt.root.Parent == attempt.character then
+            attempt.root.CFrame = attempt.position
+            attempt.root.AssemblyLinearVelocity = Vector3.zero
+            attempt.root.AssemblyAngularVelocity = Vector3.zero
+        end
+    end
+    local function stopRun(run)
+        if not run then return end
+        run.enabled = false
+        cleanupAttempt(run)
+    end
+    local function nextAll(run)
+        local candidates = {}
+        for _, target in ipairs(Players:GetPlayers()) do
+            if Hub.loopTargetReady(target) then table.insert(candidates, target) end
+        end
+        table.sort(candidates, function(a, b) return a.UserId < b.UserId end)
+        local nextTarget = candidates[1]
+        for _, target in ipairs(candidates) do
+            if target.UserId > run.cursor then nextTarget = target; break end
+        end
+        if nextTarget then run.cursor = nextTarget.UserId end
+        return nextTarget
+    end
+    local function start(key, on, all)
+        local running = Hub.beginTargetLoop(key, on)
+        Hub.requestSave()
+        if key == "LoopKillToggle" then loopKillEnabled = on else loopKillEnabledAll = on end
+        if not on then
+            if activeRun and activeRun.key == key then stopRun(activeRun); activeRun = nil end
+            return
+        end
+        if activeRun then
+            local previous = activeRun
+            stopRun(previous)
+            activeRun = nil
+            if previous.key ~= key and Toggles[previous.key] then Toggles[previous.key]:SetValue(false) end
+        end
+        local run = {key = key, enabled = true, cursor = 0}
+        activeRun = run
+        local function live() return run.enabled and activeRun == run and running() end
+        task.spawn(function()
+            while live() do
+                local target = all and nextAll(run) or Hub.nextLoopTarget("loopKill")
+                local char = Player.Character
+                local root = char and char:FindFirstChild("HumanoidRootPart")
+                local hum = char and char:FindFirstChildOfClass("Humanoid")
+                local targetChar = target and target.Character
+                local targetRoot = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
+                local targetHum = targetChar and targetChar:FindFirstChildOfClass("Humanoid")
+                local function valid()
+                    return live() and Player.Character == char and root and root.Parent == char
+                        and hum and hum.Health > 0 and not Hub.blobFlightActive and not Hub.safeZoneLoopActive
+                        and targetRoot and targetRoot.Parent == targetChar and Hub.loopTargetReady(target, targetChar)
+                        and (all or Hub.isSelectedTarget(target))
+                end
+                if not valid() then task.wait(0.2); continue end
+                local attempt = {character = char, root = root, position = root.CFrame, collisions = {}}
+                run.attempt = attempt
+                local ok, err = xpcall(function()
+                    local deadline = os.clock() + 0.75
+                    for _ = 1, 15 do
+                        if not valid() or os.clock() >= deadline then break end
+                        for _, part in ipairs(char:GetDescendants()) do
+                            if part:IsA("BasePart") then
+                                if attempt.collisions[part] == nil then attempt.collisions[part] = part.CanCollide end
+                                part.CanCollide = false
+                            end
+                        end
+                        -- Move into ownership range before requesting it, rather than wasting the first pass.
+                        local offset = targetRoot.Position.Y <= -12 and Vector3.new(0, 5, -15) or Vector3.new(0, -10, -10)
+                        root.CFrame = CFrame.new(targetRoot.Position + offset)
+                        root.AssemblyLinearVelocity = Vector3.zero
+                        SNOWship(targetRoot)
+                        if not valid() then break end
+                        if (CheckNetworkOwnerShipOnPlayer and CheckNetworkOwnerShipOnPlayer(target))
+                            or targetRoot.AssemblyLinearVelocity.Magnitude > 500 then
+                            if not valid() then break end
+                            local events = ReplicatedStorage:FindFirstChild("GrabEvents")
+                            local drop = events and events:FindFirstChild("DestroyGrabLine")
+                            if drop then Hub.fire(drop, targetRoot) end
+                            if valid() then CreateSkyVelocity(targetRoot) end
+                            break
+                        end
+                        if not valid() then break end
+                        if Hub.canAffect(targetHum) then
+                            targetHum:ChangeState(Enum.HumanoidStateType.Dead)
+                            targetHum.Jump, targetHum.Sit = true, false
+                        end
+                        task.wait(0.05)
+                    end
+                end, debug.traceback)
+                cleanupAttempt(run)
+                if not ok and live() then
+                    Hub.lastKillLoopError = tostring(err)
+                    warn("[Arriva kill loop] " .. tostring(err))
+                end
+                if live() then task.wait(0.1) end
+            end
+            cleanupAttempt(run)
+        end)
+    end
+    TargetGroup:AddToggle("LoopKillToggle", {Text = "Loop kill", Default = false,
+        Callback = function(on) start("LoopKillToggle", on, false) end})
+    -- Loop Kill All
+    TargetGroup:AddToggle("LoopKillToggleAll", {Text = "Loop kill All", Default = false,
+        Callback = function(on) start("LoopKillToggleAll", on, true) end})
+    Hub.cleanup(function() stopRun(activeRun); activeRun = nil end)
+end
+-- End kill loop lifecycle
 
 local grabBlobLoopEnabled = false
 TargetGroup:AddToggle("LoopKickToggle2", {
@@ -5116,31 +5442,16 @@ TargetGroup:AddToggle("LoopKickToggle2", {
 		grabBlobLoopEnabled = on
 		Hub.requestSave()
 
-		local target = SelectedPlayer
-
-		local char = Player.Character
-		local hum = char and char:FindFirstChild("Humanoid")
-		local seat = hum and hum.SeatPart
-
-		if not on then
-            if not ownsRun() then return end
-			grabBlobLoopEnabled = false
-			return
-		end
-
+        if not on then return end
         autoblob(running)
         if not running() then return end
 
-        char = Player.Character
-        hum = char and char:FindFirstChild("Humanoid")
-        seat = hum and hum.SeatPart
-        if not seat or seat.Parent.Name ~= "CreatureBlobman" then
-            notify("System", "Sit in a Blobman before enabling this loop", 3)
-            Toggles.LoopKickToggle2:SetValue(false)
-            return
-        end
-
 		task.spawn(function()
+            while running() do
+                local seat = Hub.getLoopBlobSeat()
+                if not seat then task.wait(0.2); continue end
+                local target = Hub.nextLoopTarget("grabBlob", 1)
+                if not target then task.wait(0.2); continue end
 			local RS = ReplicatedStorage
 			local GE = RS:WaitForChild("GrabEvents")
 			local RunService = game:GetService("RunService")
@@ -5156,12 +5467,12 @@ TargetGroup:AddToggle("LoopKickToggle2", {
 			local R_Weld = R_Det and (R_Det:FindFirstChild("RightWeld") or R_Det:FindFirstChildWhichIsA("Weld"))
             if not running() then return end
             if not blobRoot or not CG or not CD or not R_Det or not R_Weld then
-                notify("System", "Blobman parts are not ready; try again after it loads", 3)
-                Toggles.LoopKickToggle2:SetValue(false)
-                return
+                Hub.loopNotice("warnings", "Blobman parts not ready", "The enabled loop will retry after the toy finishes loading.", "blobParts")
+                task.wait(0.5)
+                continue
             end
 
-			local SavedPos = blobRoot.CFrame
+			local SavedPos = blobRoot.CFrame 
 
 			local tChar = Hub.canHarm(target) and target.Character or nil
 			local tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")
@@ -5169,7 +5480,7 @@ TargetGroup:AddToggle("LoopKickToggle2", {
 			if tRoot and blobRoot then
 				local bringStart = tick()
 				while running() and tick() - bringStart < 0.35 do
-					if not running() or not Hub.isSelectedTarget(target) or not Hub.loopTargetReady(target, tChar) then break end
+					if not running() or not Hub.isSelectedTarget(target) or not Hub.loopTargetReady(target, tChar) or Hub.getLoopBlobSeat() ~= seat or not blobRoot.Parent then break end
 
 					if Hub.canAffect(tRoot) then blobRoot.CFrame = tRoot.CFrame end
 					blobRoot.Velocity = Vector3.zero
@@ -5183,7 +5494,7 @@ TargetGroup:AddToggle("LoopKickToggle2", {
 				end
 
                 if not ownsRun() then return end
-                if blobRoot.Parent then
+                if blobRoot.Parent and Hub.getLoopBlobSeat() == seat then
 				    blobRoot.CFrame = SavedPos
 				    blobRoot.Velocity = Vector3.zero
                 end
@@ -5193,7 +5504,7 @@ TargetGroup:AddToggle("LoopKickToggle2", {
 			local packetTimer = 0
 
 			while running() do
-                if Hub.getBlobSeat() ~= seat or not blobRoot.Parent then task.wait(0.2); continue end
+                if Hub.getLoopBlobSeat() ~= seat or not blobRoot.Parent then break end
                 target = Hub.nextLoopTarget("grabBlob", 1)
                 if not target then task.wait(0.2); continue end
 
@@ -5239,13 +5550,12 @@ TargetGroup:AddToggle("LoopKickToggle2", {
 				RunService.Heartbeat:Wait()
 			end
 
-			grabBlobLoopEnabled = false
-			if Toggles.LoopKickToggle2 then Toggles.LoopKickToggle2:SetValue(false) end
-
-			if blobRoot then
+            if not ownsRun() then return end
+			if blobRoot and blobRoot.Parent and Hub.getLoopBlobSeat() == seat then
 				blobRoot.CFrame = SavedPos
 				blobRoot.Velocity = Vector3.zero
 			end
+            end
 		end)
 	end
 })
@@ -5507,8 +5817,8 @@ end)
 
 -- Blob Fly System
 do
-    local activeRoot, activeCharacter, velocity, gyro
-    local speed, currentVelocity = 50, Vector3.zero
+    local activeRoot, activeCharacter, activeSeat, velocity, gyro
+    local speed = 50
     local status = BlobGroup:AddLabel("Blob Fly: sit in a Blobman, then press R.")
     local function discard(object)
         if not object then return end
@@ -5517,8 +5827,7 @@ do
     end
     local function stop()
         discard(velocity); discard(gyro)
-        velocity, gyro, activeRoot, activeCharacter = nil, nil, nil, nil
-        currentVelocity = Vector3.zero
+        velocity, gyro, activeRoot, activeCharacter, activeSeat = nil, nil, nil, nil, nil
         Hub.blobFlightActive = false
         status:SetText("Blob Fly off. Sit in a Blobman and use your flight shortcut to start.")
     end
@@ -5530,45 +5839,45 @@ do
         local blob = seat and seat.Parent
         if not hum or hum.Health <= 0 or not seat or seat.Occupant ~= hum
             or not blob or blob.Name ~= "CreatureBlobman" then return end
-        local root = blob:FindFirstChild("HumanoidRootPart") or blob.PrimaryPart or seat.AssemblyRootPart
+        -- Vehicle-fly applies force to the rider's root, joined to the vehicle by its seat weld.
+        local root = char:FindFirstChild("HumanoidRootPart")
         if not root or not root:IsA("BasePart") or not root.Parent or root.Anchored then return end
-        return root, char
+        return root, char, seat
     end
     function Hub.setBlobFlight(on)
         if not on then stop(); return true end
-        local root, char = seatedRoot()
+        local root, char, seat = seatedRoot()
         if not root then
             stop(); status:SetText("Sit in a live, unanchored Blobman before starting flight."); return false
         end
         stop()
-        activeRoot, activeCharacter = root, char
+        activeRoot, activeCharacter, activeSeat = root, char, seat
         velocity = Hub.new("BodyVelocity", root)
         velocity.Name = "BlobFlyVelocity"
-        velocity.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
-        velocity.P = 10000
+        velocity.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+        velocity.P = 1250
         velocity.Velocity = Vector3.zero
         gyro = Hub.new("BodyGyro", root)
         gyro.Name = "BlobFlyGyro"
-        gyro.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
-        gyro.P, gyro.D = 10000, 1000
+        gyro.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+        gyro.P, gyro.D = 9e4, 500
         gyro.CFrame = root.CFrame
         Hub.blobFlightActive = true
-        -- Seating normally grants ownership; make one request on activation, never every frame.
-        if setNetworkOwnerEvent then pcall(function() Hub.fire(setNetworkOwnerEvent, root, root.CFrame) end) end
-        status:SetText("Blob Fly on: WASD, Space up, Left Control down. Flight shortcut stops.")
+        if Hub.updateHeavyBlobman then Hub.updateHeavyBlobman() end
+        status:SetText("Vehicle Fly: W follows your view (look up/down to climb/dive), S reverses, A/D strafe, E/Q rise/descend. Release keys to hover.")
         return true
     end
     local function finite(vector)
         return vector.X == vector.X and vector.Y == vector.Y and vector.Z == vector.Z
             and math.abs(vector.X) < math.huge and math.abs(vector.Y) < math.huge and math.abs(vector.Z) < math.huge
     end
-    function Hub.updateBlobFlight(dt)
+    function Hub.updateBlobFlight()
         if not Hub.blobFlightActive then return end
-        local root, char = seatedRoot()
-        if root ~= activeRoot or char ~= activeCharacter or not velocity.Parent or not gyro.Parent then stop(); return end
+        local root, char, seat = seatedRoot()
+        if root ~= activeRoot or char ~= activeCharacter or seat ~= activeSeat or not velocity.Parent or not gyro.Parent then stop(); return end
         local camera = Workspace.CurrentCamera
-        if not camera or not finite(camera.CFrame.LookVector) or not finite(camera.CFrame.RightVector) then
-            currentVelocity = Vector3.zero; velocity.Velocity = Vector3.zero; return
+        if not camera or not finite(camera.CFrame.LookVector) or not finite(camera.CFrame.RightVector) or not finite(camera.CFrame.UpVector) then
+            velocity.Velocity = Vector3.zero; return
         end
         local look, right = camera.CFrame.LookVector, camera.CFrame.RightVector
         local move = Vector3.zero
@@ -5577,19 +5886,13 @@ do
             if UserInputService:IsKeyDown(Enum.KeyCode.S) then move -= look end
             if UserInputService:IsKeyDown(Enum.KeyCode.A) then move -= right end
             if UserInputService:IsKeyDown(Enum.KeyCode.D) then move += right end
-            if UserInputService:IsKeyDown(Enum.KeyCode.Space) then move += Vector3.new(0, 1, 0) end
-            if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then move -= Vector3.new(0, 1, 0) end
+            if UserInputService:IsKeyDown(Enum.KeyCode.E) then move += camera.CFrame.UpVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.Q) then move -= camera.CFrame.UpVector end
         end
         if move.Magnitude > 1 then move = move.Unit end
-        local seconds = type(dt) == "number" and dt == dt and math.clamp(dt, 0, 0.1) or 1 / 60
-        local alpha = 1 - math.exp(-14 * seconds)
-        currentVelocity += (move * speed - currentVelocity) * alpha
-        velocity.Velocity = currentVelocity
-        -- Camera pitch controls travel direction, but only yaw steers the blob's body.
-        local heading = Vector3.new(look.X, 0, look.Z)
-        if heading.Magnitude > 0.001 then
-            gyro.CFrame = CFrame.lookAt(root.Position, root.Position + heading.Unit, Vector3.yAxis)
-        end
+        -- Immediate camera-relative travel and full camera orientation, like vehiclefly.
+        velocity.Velocity = move * speed
+        gyro.CFrame = camera.CFrame
     end
     Hub.connect(UserInputService.InputBegan, function(input, processed)
         if not processed and not UserInputService:GetFocusedTextBox() and Hub.matchesKeybind("BlobFlyKey", input, "R") then
@@ -6206,8 +6509,6 @@ do
 		Hub.refreshWhitelistUI()
 		if Hub.whitelistFriends then for _, player in ipairs(Players:GetPlayers()) do Hub.checkFriend(player) end end
 	end})
-	WhitelistGroup:AddLabel("Protected players are skipped by hub actions. Pending friend checks also block targeting.", true)
-	WhitelistGroup:AddLabel("Roblox may cache friendship results. Manual selections apply immediately.", true)
 end
 
 -- Joined Notify
@@ -6324,160 +6625,316 @@ TargetNotificationGroup:AddToggle("RespawnNotifyBtn", {
 	end
 })
 
-local AuraGroup = Tabs.Aura:AddLeftGroupbox("Auras")
+-- Player aura controls and local proximity feedback.
+do
+    local group = Tabs.Aura:AddLeftGroupbox("Player Auras")
+    Hub.playerAuraControls=group
+    Hub.auraSettings = {range = 50, selectedOnly = false, alertCooldown = 10, flingStrength = 100}
 
-AuraGroup:AddToggle("Deathaura", {
-	Text = "Death Aura",
-	Default = false,
-	Callback = function(on)
-		Hub.requestSave()
-		deathAuraEnabled = on
-		if on then
-			task.spawn(function()
-				local RS = ReplicatedStorage
-				local PS = Players
-				local GE = RS:WaitForChild("GrabEvents")
+    function Hub.auraTargetInRange(target, myChar, targetChar)
+        if Player.Character ~= myChar or not myChar then return false end
+        local root = myChar:FindFirstChild("HumanoidRootPart")
+        local hum = myChar:FindFirstChildOfClass("Humanoid")
+        if not root or not hum or hum.Health <= 0 then return false end
+        if not Hub.loopTargetReady(target, targetChar) then return false end
+        if Hub.auraSettings.selectedOnly and not Hub.isSelectedTarget(target) then return false end
+        local otherRoot = target.Character:FindFirstChild("HumanoidRootPart")
+        return (root.Position - otherRoot.Position).Magnitude <= Hub.auraSettings.range
+    end
 
-				while deathAuraEnabled do
-					local myChar = Player.Character
-					local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    function Hub.getAuraTargets(myChar)
+        local targets, distances = {}, {}
+        for _, target in ipairs(Players:GetPlayers()) do
+            if Hub.auraTargetInRange(target, myChar) then
+                table.insert(targets, target)
+                distances[target] = (myChar.HumanoidRootPart.Position - target.Character.HumanoidRootPart.Position).Magnitude
+            end
+        end
+        table.sort(targets, function(a, b)
+            if distances[a] == distances[b] then return a.UserId < b.UserId end
+            return distances[a] < distances[b]
+        end)
+        return targets
+    end
 
-					if myRoot then
-						-- Find all players within 50 studs
-						for _, target in pairs(PS:GetPlayers()) do
-							if not deathAuraEnabled then break end
-							if not Hub.canHarm(target) then continue end
+    function Hub.collectAuraEntries(targets, previous, cooldowns, now)
+        local entering, inside = {}, {}
+        for _, target in ipairs(targets) do
+            local id = target.UserId
+            inside[id] = true
+            if not previous[id] and (not cooldowns[id] or now >= cooldowns[id]) then
+                table.insert(entering, target)
+                cooldowns[id] = now + Hub.auraSettings.alertCooldown
+            end
+        end
+        return entering, inside
+    end
 
-							if not Hub.canHarm(target) or not target.Character then
-								continue
-							end
+    local function runAura(id, enabled, effect)
+        local running = Hub.beginTargetLoop(id, enabled)
+        if not enabled then return end
+        task.spawn(function()
+            while running() do
+                local myChar = Player.Character
+                for _, target in ipairs(Hub.getAuraTargets(myChar)) do
+                    if not running() then break end
+                    local targetChar = target.Character
+                    for _ = 1, 50 do
+                        if not running() or not Hub.auraTargetInRange(target, myChar, targetChar) then break end
+                        if SNOWshipPlayer(target, function()
+                            if running() and Hub.auraTargetInRange(target, myChar, targetChar) then
+                                effect(target, myChar, targetChar, running)
+                            end
+                        end) then break end
+                        task.wait()
+                    end
+                    task.wait(0.1)
+                end
+                task.wait(0.5)
+            end
+        end)
+    end
 
-							local tChar = Hub.canHarm(target) and target.Character or nil
-							local tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")
-							local tHum = tChar and tChar:FindFirstChild("Humanoid")
+    group:AddToggle("Deathaura", {Text = "Death Aura", Default = false, Callback = function(on)
+        runAura("Deathaura", on, function(target, myChar, targetChar, running)
+            local root = targetChar:FindFirstChild("HumanoidRootPart")
+            local hum = targetChar:FindFirstChildOfClass("Humanoid")
+            CreateSkyVelocity(root)
+            for _ = 0, 20 do
+                if not running() or not Hub.auraTargetInRange(target, myChar, targetChar) then break end
+                if Hub.canAffect(hum) then
+                    hum.BreakJointsOnDeath = false
+                    hum:ChangeState(Enum.HumanoidStateType.Dead)
+                    hum.Jump = true
+                    hum.Sit = true
+                end
+            end
+            task.wait()
+            if running() and Hub.auraTargetInRange(target, myChar, targetChar) then Hub.fire(destroyGrabLineEvent, root) end
+        end)
+    end})
 
-							-- Check if player is within 50 studs and alive
-							if tRoot and tHum and tHum.Health > 0 then
-								local distance = (myRoot.Position - tRoot.Position).Magnitude
+    group:AddToggle("FlingAura", {Text = "Fling Aura", Default = false, Callback = function(on)
+        runAura("FlingAura", on, function(target, myChar, targetChar, running)
+            local root = targetChar:FindFirstChild("HumanoidRootPart")
+            local direction = lookAt(myChar.HumanoidRootPart.Position, root.Position).LookVector
+            local velocity = Hub.new("BodyVelocity", root)
+            velocity.Name = "ArrivaAuraVelocity"
+            velocity.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+            velocity.Velocity = Vector3.new(direction.X, 0.5, direction.Z) * Hub.auraSettings.flingStrength
+            Debris:AddItem(velocity, 0.2)
+            task.wait()
+            velocity:Destroy()
+            Hub.instances[velocity] = nil
+            Hub.assetTargets[velocity] = nil
+            if running() and Hub.auraTargetInRange(target, myChar, targetChar) then Hub.fire(destroyGrabLineEvent, root) end
+        end)
+    end})
 
-								if distance <= 50 then
-									-- Death counter action
-									local counterAction = function()
-										if tHum and Hub.canHarm(target) then
-											CreateSkyVelocity(tRoot)
-											for _ = 0, 20 do
-												if Hub.canAffect(tHum) then tHum.BreakJointsOnDeath = false end
-												if Hub.canAffect(tHum) then tHum:ChangeState(Enum.HumanoidStateType.Dead) end
-												if Hub.canAffect(tHum) then tHum.Jump = true end
-												if Hub.canAffect(tHum) then tHum.Sit = true end
-											end
-											task.wait()
-											Hub.fire(GE.DestroyGrabLine, tRoot)
-										end
-									end
+    group:AddButton({Text = "Stop player auras", Func = function()
+        for _, id in ipairs({"Deathaura", "FlingAura"}) do if Toggles[id] then Toggles[id]:SetValue(false) end end
+        if Hub.stopPlayerPhysicsAuras then Hub.stopPlayerPhysicsAuras() end
+    end})
+    group:AddSlider("PlayerAuraFlingStrength",{Text="Fling aura strength",Default=100,Min=25,Max=1000,Rounding=0,Callback=function(value) Hub.auraSettings.flingStrength=value end})
+    group:AddSlider("PlayerAuraRange", {Text = "Player aura range (studs)", Default = 50, Min = 5, Max = 50, Rounding = 0,
+        Callback = function(value) Hub.auraSettings.range = value end})
+    group:AddToggle("PlayerAuraSelectedOnly", {Text = "Only selected Loop Players", Default = false,
+        Callback = function(on) Hub.auraSettings.selectedOnly = on end})
 
-									-- Execute SNOWship loop
-									for _ = 1, 50 do
-										if not deathAuraEnabled then break end
-										if SNOWshipPlayer(target, counterAction) then
-											break
-										end
-										task.wait()
-									end
+    local feedback = Tabs.Aura:AddRightGroupbox("Range & Alerts")
+    local status = feedback:AddLabel("Range preview and proximity alerts are off.")
+    local preview, alerts = false, false
+    local connection, marker
+    local ringObjects = {}
+    local inside, cooldowns = {}, {}
+    local elapsed = 0
 
-									task.wait(0.1) -- Small delay between targets
-								end
-							end
-						end
-					end
+    local function clearRing()
+        for _, object in ipairs(ringObjects) do
+            Hub.instances[object] = nil
+            Hub.assetTargets[object] = nil
+            object:Destroy()
+        end
+        table.clear(ringObjects)
+        marker = nil
+    end
 
-					task.wait(0.5) -- Check for new targets every 0.5 seconds
-				end
-			end)
-		else
-			deathAuraEnabled = false
-		end
-	end
-})
+    local function makeRing()
+        if marker then return end
+        marker = Hub.new("Part")
+        marker.Name = "ArrivaAuraRangePreview"
+        marker.Anchored = true
+        marker.CanCollide = false
+        marker.CanTouch = false
+        marker.CanQuery = false
+        marker.Transparency = 1
+        marker.Size = Vector3.new(0.1, 0.1, 0.1)
+        table.insert(ringObjects, marker)
+        local points = {}
+        for i = 1, 32 do
+            local point = Hub.new("Attachment", marker)
+            table.insert(points, point)
+            table.insert(ringObjects, point)
+        end
+        for i = 1, 32 do
+            local beam = Hub.new("Beam", marker)
+            beam.Attachment0 = points[i]
+            beam.Attachment1 = points[i % 32 + 1]
+            beam.Width0 = 0.12
+            beam.Width1 = 0.12
+            beam.FaceCamera = true
+            beam.Color = ColorSequence.new(Color3.fromRGB(105, 185, 255))
+            beam.Transparency = NumberSequence.new(0.2)
+            table.insert(ringObjects, beam)
+        end
+        marker.Parent = Workspace
+    end
 
+    local function update()
+        local char = Player.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if not root or not hum or hum.Health <= 0 then
+            clearRing()
+            inside = {}
+            status:SetText("Waiting for your character.")
+            return
+        end
+        if preview then
+            makeRing()
+            marker.CFrame = CFrame.new(root.Position - Vector3.new(0, hum.HipHeight + root.Size.Y / 2, 0))
+            for i = 1, 32 do
+                local angle = (i - 1) * math.pi * 2 / 32
+                ringObjects[i + 1].Position = Vector3.new(math.cos(angle), 0, math.sin(angle)) * Hub.auraSettings.range
+            end
+        else clearRing() end
+        local targets = Hub.getAuraTargets(char)
+        status:SetText(string.format("%d eligible players within %d studs%s.", #targets, Hub.auraSettings.range,
+            Hub.auraSettings.selectedOnly and " (selected only)" or ""))
+        if alerts then
+            local entering
+            entering, inside = Hub.collectAuraEntries(targets, inside, cooldowns, os.clock())
+            if #entering > 0 then
+                local names = {}
+                for i = 1, math.min(#entering, 3) do table.insert(names, entering[i].Name) end
+                local suffix = #entering > 3 and string.format(" +%d more", #entering - 3) or ""
+                Library:Notify({Title = "Players entered aura range", Description = table.concat(names, ", ") .. suffix, Time = 4})
+            end
+        end
+    end
 
-AuraGroup:AddToggle("FlingAura", {
-	Text = "Fling Aura",
-	Default = false,
-	Callback = function(on)
-		Hub.requestSave()
-		deathAuraEnabled = on
-		if on then
-			task.spawn(function()
-				local RS = ReplicatedStorage
-				local PS = Players
-				local GE = RS:WaitForChild("GrabEvents")
+    local function refreshFeedback()
+        if connection then connection:Disconnect(); Hub.connections[connection] = nil; connection = nil end
+        elapsed = 0
+        if not preview then clearRing() end
+        if not preview and not alerts then
+            inside = {}
+            status:SetText("Range preview and proximity alerts are off.")
+            return
+        end
+        update()
+        connection = Hub.connect(RunService.Heartbeat, function(dt)
+            elapsed += dt
+            if elapsed >= 0.1 then elapsed = 0; update() end
+        end)
+    end
 
-				while deathAuraEnabled do
-					local myChar = Player.Character
-					local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    feedback:AddToggle("PlayerAuraRangePreview", {Text = "Show player aura range", Default = false,
+        Callback = function(on) preview = on; refreshFeedback() end})
+    feedback:AddToggle("PlayerAuraProximityAlerts", {Text = "Proximity alerts", Default = false,
+        Callback = function(on) alerts = on; inside = {}; refreshFeedback() end})
+    feedback:AddSlider("PlayerAuraAlertCooldown", {Text = "Re-entry alert cooldown (seconds)", Default = 10, Min = 5, Max = 60, Rounding = 0,
+        Callback = function(value) Hub.auraSettings.alertCooldown = value end})
+    Hub.connect(Players.PlayerRemoving, function(player) inside[player.UserId] = nil; cooldowns[player.UserId] = nil end)
+    Hub.connect(Player.CharacterRemoving, function() clearRing(); inside = {} end)
+    Hub.cleanup(function()
+        preview, alerts = false, false
+        if connection then connection:Disconnect(); Hub.connections[connection] = nil; connection = nil end
+        clearRing()
+    end)
+end
 
-					if myRoot then
-						-- Find all players within 50 studs
-						for _, target in pairs(PS:GetPlayers()) do
-							if not deathAuraEnabled then break end
-							if not Hub.canHarm(target) then continue end
-
-							if not Hub.canHarm(target) or not target.Character then
-								continue
-							end
-
-							local tChar = Hub.canHarm(target) and target.Character or nil
-							local tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")
-							local tHum = tChar and tChar:FindFirstChild("Humanoid")
-
-							-- Check if player is within 50 studs and alive
-							if tRoot and tHum and tHum.Health > 0 then
-								local distance = (myRoot.Position - tRoot.Position).Magnitude
-
-								if distance <= 50 then
-									-- Death counter action
-									local counterAction = function()
-										if tHum and Hub.canHarm(target) then
-											lookAtCFrame = lookAt(LocalPlayer.Character.HumanoidRootPart.Position, tRoot.Position)
-											local bodyVelocity = Instance.new("BodyVelocity", target.Character.HumanoidRootPart)
-											bodyVelocity.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
-											bodyVelocity.Velocity = Vector3.new(lookAtCFrame.lookVector.X, 0.5, lookAtCFrame.lookVector.Z) * 100
-											wait()
-											bodyVelocity:Destroy()
-											destroyGrabLineEvent:FireServer(tRoot)
-										end
-									end
-
-
-									-- Execute SNOWship loop
-									for _ = 1, 50 do
-										if not deathAuraEnabled then break end
-										if SNOWshipPlayer(target, counterAction) then
-											break
-										end
-										task.wait()
-									end
-
-									task.wait(0.1) -- Small delay between targets
-								end
-							end
-						end
-					end
-
-					task.wait(0.5) -- Check for new targets every 0.5 seconds
-				end
-			end)
-		else
-			deathAuraEnabled = false
-		end
-	end
-})
-
+-- Player attraction and tornado forces.
+do
+(function()
+    local group=Tabs.Aura:AddLeftGroupbox("Attraction & Tornado")
+    local flags={};local entries={};local owners={}
+    local pullSpeed,tornadoSpeed=100,5
+    local elapsed=0
+    local function remove(part)
+        local entry=entries[part];if not entry then return end
+        entries[part]=nil;owners[part]=nil
+        Hub.instances[entry.force],Hub.assetTargets[entry.force]=nil,nil
+        entry.force:Destroy()
+    end
+    local function clear() for part in pairs(entries) do remove(part) end;table.clear(owners) end
+    function Hub.samplePlayerPhysicsAuras()
+        if not flags.tornado and not flags.attraction then clear();return end
+        local char=Player.Character
+        local root=char and char:FindFirstChild("HumanoidRootPart")
+        local hum=char and char:FindFirstChildOfClass("Humanoid")
+        if not root or not hum or hum.Health<=0 then clear();return end
+        local targets={};local valid={}
+        for _,target in ipairs(Players:GetPlayers()) do
+            if Hub.auraTargetInRange(target,char,target.Character) then
+                table.insert(targets,target);valid[target.Character:FindFirstChild("HumanoidRootPart")]=true
+            end
+        end
+        for part in pairs(entries) do if not valid[part] then remove(part) end end
+        local now=os.clock()
+        for _,target in ipairs(targets) do
+            local part=target.Character:FindFirstChild("HumanoidRootPart")
+            if Hub.canAffect(part) and not part.Anchored then
+                local entry=entries[part]
+                if entry and not entry.force.Parent then remove(part);entry=nil end
+                if not entry then
+                    local force=Hub.new("BodyVelocity",part);force.Name="ArrivaPlayerAura"
+                    force.MaxForce=Vector3.new(1e7,1e7,1e7)
+                    entry={force=force};entries[part]=entry;Hub.assetTargets[force]=part
+                end
+                if now>=(owners[part] or 0) and (root.Position-part.Position).Magnitude<=30 then
+                    owners[part]=now+1
+                    if setNetworkOwnerEvent then Hub.fire(setNetworkOwnerEvent,part,part.CFrame) end
+                end
+                local delta
+                if flags.tornado then
+                    local angle=now*tornadoSpeed+(target.UserId%32)*math.pi/16
+                    delta=(root.Position+Vector3.new(math.cos(angle)*15,10,math.sin(angle)*15)-part.Position)*4
+                    if delta.Magnitude>100 then delta=delta.Unit*100 end
+                else
+                    delta=root.Position-part.Position
+                    delta=delta.Magnitude>0.01 and delta.Unit*math.min(pullSpeed,delta.Magnitude*4) or Vector3.zero
+                end
+                entry.force.Velocity=delta
+            elseif entries[part] then remove(part) end
+        end
+    end
+    local function toggle(id,label,key)
+        group:AddToggle(id,{Text=label,Default=false,Callback=function(on) flags[key]=on;clear() end})
+    end
+    toggle("PlayerAttractionAura","Attraction Aura","attraction")
+    toggle("PlayerTornadoAura","Tornado Aura","tornado")
+    group:AddSlider("PlayerAttractionStrength",{Text="Attraction speed",Default=100,Min=10,Max=500,Rounding=0,Callback=function(value) pullSpeed=value end})
+    group:AddSlider("PlayerTornadoSpeed",{Text="Tornado speed",Default=5,Min=1,Max=10,Rounding=1,Callback=function(value) tornadoSpeed=value end})
+    Hub.stopPlayerPhysicsAuras=function()
+        flags={};clear()
+        for _,id in ipairs({"PlayerAttractionAura","PlayerTornadoAura"}) do
+            if Toggles[id] and Toggles[id].Value then Toggles[id]:SetValue(false) end
+        end
+    end
+    local heartbeat=Hub.connect(RunService.Heartbeat,function(dt) elapsed+=dt;if elapsed>=0.2 then elapsed=0;Hub.samplePlayerPhysicsAuras() end end)
+    Hub.connect(Player.CharacterRemoving,clear)
+    Hub.cleanup(function()
+        heartbeat:Disconnect();Hub.connections[heartbeat]=nil;flags={};clear()
+        Hub.samplePlayerPhysicsAuras,Hub.stopPlayerPhysicsAuras=nil,nil
+    end)
+end)()
+end
+-- End player physics auras
 
 -- Grab Tab
-local GrabGroup = Tabs.Grab:AddLeftGroupbox("Grab Customization")
-local GrabOptions = Tabs.Grab:AddLeftGroupbox("Grab Options")
+local GrabGroup = Tabs.Grab:AddLeftGroupbox("Throw & Distance")
+local GrabOptions = Tabs.Grab:AddLeftGroupbox("Grab Modes")
 
 _G.strength = 750
 local strengthConnection
@@ -6600,6 +7057,203 @@ GrabOptions:AddToggle("NoclipGrabToggle", {
 	end
 })
 
+-- Additional grab modes.
+do
+(function()
+    local group=GrabOptions
+    local flags={};local current,character,origin,spin
+    local perspectiveSpeed=50
+    local function restore()
+        if spin then Hub.instances[spin],Hub.assetTargets[spin]=nil,nil;spin:Destroy();spin=nil end
+        if origin and Player.Character==character and not Hub.blobFlightActive and not Hub.safeZoneLoopActive then
+            local root=character and character:FindFirstChild("HumanoidRootPart")
+            if root then root.CFrame=origin end
+        end
+        origin,character,current=nil,nil,nil
+    end
+    local function held()
+        local model=Workspace:FindFirstChild("GrabParts")
+        local grab=model and model:FindFirstChild("GrabPart",true)
+        local weld=grab and grab:FindFirstChildWhichIsA("WeldConstraint")
+        local part=weld and weld.Part1
+        if not part or not part:IsA("BasePart") or not part.Parent or not Hub.canAffect(part)
+            or (Player.Character and part:IsDescendantOf(Player.Character)) then return end
+        return part,model
+    end
+    function Hub.sampleToolGrabTypes(dt)
+        local any=false;for _,on in pairs(flags) do if on then any=true end end
+        if not any then if current then restore() end;return end
+        local part,model=held()
+        if part~=current or Player.Character~=character then restore();current=part;character=Player.Character end
+        if not part or not character then return end
+        if flags.crazy and not part.Anchored then
+            if not spin or not spin.Parent then
+                spin=Hub.new("BodyAngularVelocity",part);spin.Name="ArrivaCrazyGrab";spin.MaxTorque=Vector3.new(1e8,1e8,1e8)
+            end
+            spin.AngularVelocity=Vector3.new(0,1000,0)
+        elseif spin then spin:Destroy();Hub.instances[spin],Hub.assetTargets[spin]=nil,nil;spin=nil end
+        if flags.perspective and not Hub.blobFlightActive and not Hub.safeZoneLoopActive then
+            if UserInputService:GetFocusedTextBox() or Hub.keybindCaptureActive then return end
+            local root=character:FindFirstChild("HumanoidRootPart")
+            local hum=character:FindFirstChildOfClass("Humanoid")
+            if root and hum and hum.Health>0 and not hum.SeatPart and not root.Anchored then
+                origin=origin or root.CFrame
+                local seconds=type(dt)=="number" and math.clamp(dt,0,0.1) or 0
+                local position=root.Position+hum.MoveDirection*perspectiveSpeed*seconds
+                local facing=Hub.safeLookAt(position,part.Position,root.CFrame.LookVector)
+                if facing then root.CFrame=facing end
+            end
+        end
+    end
+    local function toggle(id,label,key)
+        group:AddToggle(id,{Text=label,Default=false,Callback=function(on)
+            restore();flags[key]=on
+            if key=="crazy" and on and Toggles.ToolSpinGrab then Toggles.ToolSpinGrab:SetValue(false) end
+        end})
+    end
+
+
+    toggle("ToolCrazyGrab","Crazy Grab","crazy")
+
+    toggle("ToolPerspectiveGrab","Perspective Grab","perspective")
+
+    group:AddButton({Text="Release held object",Func=function()
+        local part=held()
+        if part and destroyGrabLineEvent then Hub.fire(destroyGrabLineEvent,part) end
+    end})
+    group:AddSlider("ToolPerspectiveSpeed",{Text="Perspective movement speed",Default=50,Min=5,Max=150,Rounding=0,Callback=function(value) perspectiveSpeed=value end})
+    local elapsed=0
+    Hub.connect(RunService.Heartbeat,function(dt)
+        elapsed+=dt;if elapsed>=0.1 then local seconds=elapsed;elapsed=0;Hub.sampleToolGrabTypes(seconds) end
+    end)
+    Hub.connect(Player.CharacterRemoving,restore)
+    Hub.cleanup(function()
+        for key in pairs(flags) do flags[key]=false end
+        restore();Hub.sampleToolGrabTypes=nil
+    end)
+end)()
+end
+-- End  additional grab types
+
+-- grab ports: invisible and spinning held objects, with release restoration.
+do
+(function()
+    local invisible,spin=false,false
+    local speed=12
+    local current,rotator
+    local saved={}
+    local function restore()
+        if rotator then Hub.instances[rotator],Hub.assetTargets[rotator]=nil,nil;rotator:Destroy();rotator=nil end
+        for part,value in pairs(saved) do pcall(function() if part.Parent then part.LocalTransparencyModifier=value end end) end
+        table.clear(saved);current=nil
+    end
+    local function canModify(part)
+        if not part or not part:IsA("BasePart") or not Hub.canAffect(part) then return false end
+        local owner=Hub.playerOf(part)
+        return not (owner and owner.Character and part:IsDescendantOf(owner.Character))
+    end
+    local function heldPart()
+        local model=Workspace:FindFirstChild("GrabParts")
+        local grab=model and model:FindFirstChild("GrabPart",true)
+        local weld=grab and grab:FindFirstChildWhichIsA("WeldConstraint")
+        if not weld then return end
+        for _,part in pairs({weld.Part1,weld.Part0}) do
+            if part and canModify(part) and not part:IsDescendantOf(model) then return part end
+        end
+    end
+    function Hub.sampleToolGrab()
+        if not invisible and not spin then if current then restore() end;return end
+        local part=heldPart()
+        if part~=current then restore();current=part end
+        if not part or not part.Parent then return end
+        local parts=part:GetConnectedParts(true);table.insert(parts,part)
+        for _,member in ipairs(parts) do if not canModify(member) then restore();return end end
+        if invisible then
+            local present={}
+            for _,member in ipairs(parts) do present[member]=true end
+            for member,value in pairs(saved) do
+                if not present[member] then
+                    pcall(function() if member.Parent then member.LocalTransparencyModifier=value end end)
+                    saved[member]=nil
+                end
+            end
+            for _,member in ipairs(parts) do
+                if canModify(member) then
+                    if saved[member]==nil then saved[member]=member.LocalTransparencyModifier end
+                    member.LocalTransparencyModifier=1
+                end
+            end
+        elseif next(saved) then
+            for member,value in pairs(saved) do pcall(function() if member.Parent then member.LocalTransparencyModifier=value end end) end
+            table.clear(saved)
+        end
+        if rotator and not rotator.Parent then
+            Hub.instances[rotator],Hub.assetTargets[rotator]=nil,nil;rotator=nil
+        end
+        if spin and not part.Anchored then
+            if not rotator then
+                rotator=Hub.new("BodyAngularVelocity",part);rotator.Name="ArrivaToolSpin"
+                rotator.MaxTorque=Vector3.new(1e7,1e7,1e7)
+            end
+            rotator.AngularVelocity=Vector3.new(0,speed,0)
+        elseif rotator then rotator:Destroy();Hub.instances[rotator],Hub.assetTargets[rotator]=nil,nil;rotator=nil end
+    end
+    GrabOptions:AddToggle("ToolInvisibleGrab",{Text="Invisible Grab (local)",Default=false,Callback=function(on) invisible=on;Hub.sampleToolGrab() end})
+    GrabOptions:AddToggle("ToolSpinGrab",{Text="Spin Grab",Default=false,Callback=function(on) if on and Toggles.ToolCrazyGrab then Toggles.ToolCrazyGrab:SetValue(false) end;spin=on;Hub.sampleToolGrab() end})
+    GrabOptions:AddSlider("ToolSpinGrabSpeed",{Text="Grab spin (radians/sec)",Default=12,Min=1,Max=60,Rounding=0,Callback=function(value) speed=value end})
+    local elapsed=0
+    Hub.connect(RunService.Heartbeat,function(dt) elapsed+=dt;if elapsed>=0.1 then elapsed=0;Hub.sampleToolGrab() end end)
+    Hub.connect(Player.CharacterRemoving,restore)
+    Hub.cleanup(function() invisible,spin=false,false;restore();Hub.sampleToolGrab=nil end)
+end)()
+end
+-- End  grab ports
+
+-- line presentation: local colors and invisibility without destroying grab beams.
+do
+(function()
+    local group=Tabs.Grab:AddRightGroupbox("Line Appearance")
+    local hidden,rainbow,colored=false,false,false
+    local tint=Color3.fromRGB(255,0,0)
+    local saved={}
+    local function restore(beam)
+        local record=saved[beam];if not record then return end;saved[beam]=nil
+        pcall(function() if beam.Parent then beam.Color=record.color;beam.Transparency=record.transparency end end)
+    end
+    local function refresh()
+        local model=Workspace:FindFirstChild("GrabParts")
+        for beam in pairs(saved) do
+            if not model or not beam:IsDescendantOf(model) or (not hidden and not rainbow and not colored) then restore(beam) end
+        end
+        if not model or (not hidden and not rainbow and not colored) then return end
+        for _,beam in ipairs(model:GetDescendants()) do
+            if beam:IsA("Beam") then
+                if not saved[beam] then saved[beam]={color=beam.Color,transparency=beam.Transparency} end
+                beam.Transparency=hidden and NumberSequence.new(1) or saved[beam].transparency
+                if rainbow then beam.Color=ColorSequence.new(Color3.fromHSV((os.clock()*0.15)%1,1,1))
+                elseif colored then beam.Color=ColorSequence.new(tint)
+                else beam.Color=saved[beam].color end
+            end
+        end
+    end
+    group:AddToggle("ToolInvisibleLine",{Text="Invisible line (local)",Default=false,Callback=function(on) hidden=on;refresh() end})
+    group:AddToggle("ToolLineTint",{Text="Custom line color (local)",Default=false,Callback=function(on) colored=on;refresh() end})
+    group:AddToggle("ToolRainbowLine",{Text="RGB line (local)",Default=false,Callback=function(on) rainbow=on;refresh() end})
+    group:AddInput("ToolLineColor",{Text="Line color hex",Default="FF0000",Finished=true,Callback=function(value)
+        local hex=tostring(value):gsub("#","")
+        if #hex==6 and hex:match("^%x+$") then
+            tint=Color3.fromRGB(tonumber(hex:sub(1,2),16),tonumber(hex:sub(3,4),16),tonumber(hex:sub(5,6),16));refresh()
+        end
+    end})
+    local elapsed=0
+    Hub.connect(RunService.Heartbeat,function(dt)
+        if hidden or rainbow or colored or next(saved) then elapsed+=dt;if elapsed>=0.1 then elapsed=0;refresh() end end
+    end)
+    Hub.cleanup(function() hidden,rainbow,colored=false,false,false;for beam in pairs(saved) do restore(beam) end end)
+end)()
+end
+-- End  line presentation
+
 -- Massless Grab: preserve the grabbed orientation relative to the character.
 do
 	local enabled=false
@@ -6645,7 +7299,7 @@ do
 			entry.part,entry.orientation,entry.position=part,orientation,position
 			local character=Player.Character
 			local root=character and character:FindFirstChild("HumanoidRootPart")
-			entry.reference=root
+			entry.tool=root
 			entry.rotationOffset=root and root.CFrame.Rotation:ToObjectSpace(part.CFrame.Rotation) or nil
 		end
 		-- The orientation target is handled below, independently of positional movement.
@@ -6684,7 +7338,7 @@ do
 					end
 					local part=entry.part
 					if part and part.Parent and not part.Anchored and canStabilizePart(part) then
-						local root=entry.reference
+						local root=entry.tool
 						local character=Player.Character
 						if root and root.Parent==character and entry.rotationOffset then
 							-- Preserve the grabbed face relative to the player, not to the world.
@@ -6854,14 +7508,14 @@ Hub.cleanup(function() StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList,
 local mouse = Player:GetMouse()
 local tpToolConn
 
--- One-shot missile throw adapted from the reference's M shortcut; V is the default here.
+-- One-shot missile throw adapted from the supplied code’s M shortcut; V is the default here.
 do
 (function()
     local group = Hub.keybindGroups.missiles
     local enabled, generation = true, 0
-    local pending, forces, referenceConnections = {}, {}, {}
+    local pending, forces, toolConnections = {}, {}, {}
     Hub.missileLaunchClaims = {}
-    local status = group:AddLabel("Reference actions: Throw Bomb, Explode Bomb, Explode Firework.")
+    local status = group:AddLabel("Ready.")
     local function disconnect(connection)
         if connection then connection:Disconnect(); Hub.connections[connection] = nil end
     end
@@ -6875,8 +7529,8 @@ do
     end
     local function cancel()
         generation += 1
-        for _, connection in ipairs(referenceConnections) do disconnect(connection) end
-        table.clear(referenceConnections)
+        for _, connection in ipairs(toolConnections) do disconnect(connection) end
+        table.clear(toolConnections)
         for operation, connection in pairs(pending) do disconnect(connection); pending[operation] = nil end
         local list = {}
         for force in pairs(forces) do table.insert(list, force) end
@@ -6938,7 +7592,7 @@ do
                     Model = child, ImpactSpeed = 100, ExplodesByPointy = false,
                     DestroysModel = false, PositionPart = body,
                 }, body.Position)
-                status:SetText("Requested " .. name .. " explosion (reference action).")
+                status:SetText("Requested " .. name .. " explosion.")
             else
                 local camera = Workspace.CurrentCamera
                 if not camera then return end
@@ -6949,10 +7603,10 @@ do
                 velocityObj.Velocity = camera.CFrame.LookVector * 500
                 Debris:AddItem(velocityObj, 10)
                 task.delay(10, function() release(velocityObj) end)
-                status:SetText("Threw BombMissile at 500 studs/sec (reference action).")
+                status:SetText("Threw BombMissile at 500 studs/sec.")
             end
         end)
-        -- Reference explosion listeners expire after one second; bound throw listeners too.
+        -- Tool explosion listeners expire after one second; bound throw listeners too.
         task.delay(explode and 1 or 5, function()
             if ticket == generation and not accepted then finish() end
         end)
@@ -7022,7 +7676,7 @@ end
 				end
 			end
 		end)
-        table.insert(referenceConnections, connection)
+        table.insert(toolConnections, connection)
         Hub.connections[connection] = true
 		spawnItemCf("BombMissile", playerCharacter.Head.CFrame or playerCharacter.HumanoidRootPart.CFrame)
         -- END supplied Throw Bomb callback
@@ -7040,7 +7694,6 @@ end
     group:AddButton({Text = "Explode Bomb", Func = function() Hub.explodeMissile("BombMissile") end})
     group:AddButton({Text = "Explode Firework", Func = function() Hub.explodeMissile("FireworkMissile") end})
     group:AddButton({Text = "Cancel missile actions", Func = cancel})
-    group:AddLabel("V: throw a new bomb at 500 studs/sec. J: spawn and immediately explode a bomb. N: spawn and immediately explode a firework. These are separate reference actions; no added impact trigger or fuse. Server physics and remote validation still apply.")
     Hub.connect(Player.CharacterRemoving, cancel)
     Hub.cleanup(function()
         enabled = false; cancel()
@@ -7313,7 +7966,7 @@ MiscGroup:AddToggle("TriggerbotToggle", {
 })
 
 -- FOV Slider
-MiscGroup:AddSlider("FOVSlider", {
+PlayerView:AddSlider("FOVSlider", {
 	Text = "FOV",
 	Default = 90,
 	Min = 1,
@@ -7539,7 +8192,7 @@ Hub.keybindGroups.actions:AddLabel("Anchor held object"):AddKeyPicker("AnchorObj
 
 -- Local cosmetic effects: no remotes, physics changes or character reparenting.
 do
-	local group = Tabs.Aura:AddRightGroupbox("Local Visual Auras")
+	local group = Tabs.Visual:AddRightGroupbox("Visual Effects")
 	local outlineOn, lightOn = false, false
 	local outline, light, childConnection
 	local currentCharacter
@@ -7607,7 +8260,7 @@ do
 	bind(Player.Character)
 end
 
--- Camera-only spectator, adapted from the reference's View feature.
+-- Camera-only spectator, adapted from the supplied code’s View feature.
 do
 	local group = Tabs.Player:AddRightGroupbox("Spectator Camera")
 	local selected, enabled, stopped = nil, false, false
@@ -7901,7 +8554,6 @@ do
 			Callback=function(on) enabled=on;start() end})
 		shapes:AddDropdown("CreativeAuraSource",{Text="Objects to use",Values={"Local decorations","My spawned toys"},Default=1,
 			Callback=function(value) mode=value;start() end})
-		shapes:AddLabel("Toy mode uses only your existing unanchored toys nearby. It skips characters, vehicles, other players' objects and map parts. It does not request network ownership.")
 		settings:AddDropdown("CreativeAuraShape",{Text="Shape",Values={"Heart","Ring","Helix","Figure Eight","Tornado","Blackhole","Star"},Default=1,
 			Callback=function(value) shape=value end})
 		settings:AddSlider("CreativeAuraCount",{Text="Maximum objects",Default=24,Min=8,Max=40,Rounding=0,
@@ -8059,7 +8711,6 @@ do
 				if not ok then warn("Creative toy cleanup:",err) end
 			end)
 		end})
-		toyGroup:AddLabel("Up to 12 toys per batch, no purchases. Auto-spawn runs once when the toy aura starts, it does not continuously replace toys. Removal only tracks toys detected during this session's spawn requests.")
 		Hub.connect(Player.CharacterRemoving,function() cancelled=true end)
 		Hub.cleanup(function() cancelled=true;autoSpawn=false end)
 		for _,name in ipairs({"UsedToyPoints","ToysLimitCap"}) do
@@ -8083,7 +8734,7 @@ end
 -- Nearby object attraction, without ownership requests or player manipulation.
 do
 	(function()
-		local group=Tabs.Aura:AddRightGroupbox("Object Attraction Aura")
+		local group=Tabs.Fun:AddRightGroupbox("Object Attraction")
 		local enabled=false
 		local range,pullSpeed,limit=35,1200,80
 		local entries={}
@@ -8223,7 +8874,6 @@ do
 			Callback=function(value) pullSpeed=value end})
 		group:AddSlider("ObjectAttractionLimit",{Text="Maximum objects",Default=80,Min=10,Max=150,Rounding=0,
 			Callback=function(value) limit=value;if enabled then start() end end})
-		group:AddLabel("Pulls nearby unanchored objects and NPCs into a 6-stud ring with collisions off and Massless enabled. Original properties are restored on release. Skips actual players and assemblies connected to them, anchored parts, seats and toys in the creative aura. Movement depends on client physics ownership. Large batches can reduce FPS.")
 		Hub.connect(Player.CharacterRemoving,stop)
 		Hub.connect(Player.CharacterAdded,function(char)
 			task.spawn(function()
@@ -8254,7 +8904,7 @@ do
 			local ok,player=pcall(function()
 				if not value:IsA("Player") then return nil end
 				-- Resolve to the service's current Player, avoiding reliance on
-				-- equality of executor-wrapped instance references.
+				-- equality of executor-wrapped instance tools.
 				return Players:GetPlayerByUserId(value.UserId)
 			end)
 			return ok and player or nil
@@ -8437,7 +9087,6 @@ do
 			captureNext=true
 			notify("Payload monitor","Waiting for one incoming RemoteEvent, even below the alert threshold.",5)
 		end})
-		group:AddLabel("Scans accessible remotes across the client, including player and sound containers. Measures observed string/buffer bytes, not wire size. Player values are event metadata, not proof of origin. Cannot inspect other clients' private outgoing calls, engine-internal traffic, or block data. RemoteFunction callbacks are left untouched. Discovery is capped at 2048 remotes.")
 		Hub.cleanup(function() enabled=false;stop() end)
 	end)()
 end
@@ -8510,7 +9159,6 @@ do
         end)
     end)
     Hub.connect(Player.CharacterRemoving,function() epoch+=1 end)
-    group:AddLabel("Choose a position inside the game's real safe zone. These options teleport your character, they do not grant protection or change your RespawnLocation. Loop mode overrides ordinary movement while enabled.")
     Hub.cleanup(function()
         spawnEnabled=false;loopEnabled=false;epoch+=1;Hub.safeZoneLoopActive=nil
         if loopConnection then loopConnection:Disconnect();Hub.connections[loopConnection]=nil;loopConnection=nil end
@@ -8519,10 +9167,335 @@ end)()
 end
 
 
--- Local presentation tools inspired by the reference's Perspective settings.
+-- utility ports: reversible local presentation and named-toy audio filters.
 do
 (function()
-    local group=Tabs.Player:AddRightGroupbox("Camera Effects")
+    local group=Tabs.Visual:AddRightGroupbox("Lighting")
+    local lighting=game:GetService("Lighting")
+    local owned={}
+    local gravityOn,gravityValue,timeOn,timeValue,syncTime=false,196.2,false,14,false
+    local function restore(key)
+        local records=owned[key];owned[key]=nil
+        for _,record in ipairs(records or {}) do
+            pcall(function()
+                if record.object[record.property]==record.applied then record.object[record.property]=record.original end
+            end)
+        end
+    end
+    local function set(key,object,property,value)
+        owned[key]=owned[key] or {}
+        local record
+        for _,entry in ipairs(owned[key]) do if entry.object==object and entry.property==property then record=entry;break end end
+        if not record then record={object=object,property=property,original=object[property]};table.insert(owned[key],record) end
+        object[property]=value;record.applied=value
+    end
+    PlayerView:AddToggle("ToolGravity",{Text="Custom gravity",Default=false,Callback=function(on)
+        gravityOn=on;if on then set("gravity",Workspace,"Gravity",gravityValue) else restore("gravity") end
+    end})
+    PlayerView:AddSlider("ToolGravityValue",{Text="Gravity",Default=196.2,Min=0,Max=400,Rounding=1,Callback=function(value)
+        gravityValue=value;if gravityOn then set("gravity",Workspace,"Gravity",value) end
+    end})
+    group:AddToggle("ToolFullBright",{Text="Full Bright",Default=false,Callback=function(on)
+        if on then
+            set("bright",lighting,"Brightness",2)
+            set("bright",lighting,"Ambient",Color3.fromRGB(128,128,128))
+            set("bright",lighting,"OutdoorAmbient",Color3.fromRGB(128,128,128))
+        else restore("bright") end
+    end})
+    group:AddToggle("ToolTimeOverride",{Text="Override time of day",Default=false,Callback=function(on)
+        timeOn=on
+        if on then set("time",lighting,"ClockTime",timeValue)
+        else
+            syncTime=false
+            if Toggles.ToolSyncTime and Toggles.ToolSyncTime.Value then Toggles.ToolSyncTime:SetValue(false) end
+            restore("time")
+        end
+    end})
+    group:AddSlider("ToolTimeOfDay",{Text="Time of day",Default=14,Min=0,Max=24,Rounding=1,Callback=function(value)
+        timeValue=value;if timeOn and not syncTime then set("time",lighting,"ClockTime",value) end
+    end})
+    group:AddToggle("ToolSyncTime",{Text="Sync override to UTC",Default=false,Callback=function(on)
+        syncTime=on
+        if on then
+            if Toggles.ToolTimeOverride then Toggles.ToolTimeOverride:SetValue(true) end
+        elseif timeOn then set("time",lighting,"ClockTime",timeValue) end
+    end})
+    local elapsed=0
+    Hub.connect(RunService.Heartbeat,function(dt)
+        elapsed+=dt;if elapsed<1 then return end;elapsed=0
+        if timeOn and syncTime then
+            local utc=os.date("!*t")
+            set("time",lighting,"ClockTime",utc.hour+utc.min/60+utc.sec/3600)
+        end
+    end)
+    PlayerView:AddToggle("ToolFirstPerson",{Text="First person",Default=false,Callback=function(on)
+        if on then set("camera",Player,"CameraMode",Enum.CameraMode.LockFirstPerson) else restore("camera") end
+    end})
+    Hub.cleanup(function() gravityOn,timeOn,syncTime=false,false,false;for key in pairs(owned) do restore(key) end end)
+end)();
+(function()
+    local group=Tabs.Misc:AddRightGroupbox("Toy Audio")
+    local boombox,jukebox=false,false
+    local saved={};local watcher;local epoch=0
+    local function matches(sound)
+        if not sound:IsA("Sound") then return false end
+        local parent=sound.Parent
+        while parent and parent~=Workspace do
+            if boombox and parent.Name=="Boombox" then return true end
+            if jukebox and (parent.Name=="Jukebox" or parent.Name=="JukeboxOrange" or parent.Name=="JukeboxBlue") then return true end
+            parent=parent.Parent
+        end
+        return false
+    end
+    local function restore(sound)
+        local record=saved[sound];if not record then return end
+        saved[sound]=nil
+        record.connection:Disconnect();Hub.connections[record.connection]=nil
+        pcall(function() if sound.Parent and sound.Volume==0 then sound.Volume=record.volume end end)
+    end
+    local function inspect(sound)
+        if not matches(sound) then return end
+        if not saved[sound] then
+            local record={volume=sound.Volume};saved[sound]=record
+            record.connection=Hub.connect(sound:GetPropertyChangedSignal("Volume"),function()
+                if saved[sound]==record and matches(sound) and sound.Volume~=0 then sound.Volume=0 end
+            end)
+        end
+        sound.Volume=0
+    end
+    local function refresh()
+        epoch+=1;local ticket=epoch
+        if watcher then watcher:Disconnect();Hub.connections[watcher]=nil;watcher=nil end
+        for sound in pairs(saved) do if not matches(sound) then restore(sound) end end
+        if boombox or jukebox then
+            watcher=Hub.connect(Workspace.DescendantAdded,inspect)
+            Hub.scanDescendants(Workspace,inspect,function() return epoch==ticket and (boombox or jukebox) end)
+        end
+    end
+    group:AddToggle("ToolMuteBoombox",{Text="Mute boomboxes",Default=false,Callback=function(on) boombox=on;refresh() end})
+    group:AddToggle("ToolMuteJukebox",{Text="Mute jukeboxes",Default=false,Callback=function(on) jukebox=on;refresh() end})
+    Hub.cleanup(function() boombox,jukebox=false,false;epoch+=1;for sound in pairs(saved) do restore(sound) end end)
+end)()
+end
+-- End  utility ports
+
+-- Plot-barrier snowball sequence.
+do
+(function()
+    local group=Tabs.Player:AddRightGroupbox("Plot Barriers")
+    local busy=false
+    local HOption={breakBarriers=false}
+    local activeConnection
+    local saved={}
+    local function restore()
+        for part,old in pairs(saved) do pcall(function() if part.Parent then part.CanCollide=old end end) end
+        table.clear(saved)
+    end
+    local function cancel()
+        HOption.breakBarriers=false
+        if activeConnection then activeConnection:Disconnect();Hub.connections[activeConnection]=nil;activeConnection=nil end
+    end
+    function Hub.breakPlotBarriers()
+        if busy or not Hub.alive then return false end
+        local LocalPlayer=Player
+        local SpawnedInToys=Workspace:FindFirstChild(Player.Name.."SpawnedInToys")
+        local menu=ReplicatedStorage:FindFirstChild("MenuToys")
+        local SpawnToyRF=menu and menu:FindFirstChild("SpawnToyRemoteFunction")
+        if not SpawnedInToys or not SpawnToyRF or not Workspace:FindFirstChild("Plots") then
+            notify("Plot barriers","Toys, plots or spawn remote are not ready.",3);return false
+        end
+        local function getRoot()
+            local char=LocalPlayer.Character
+            return char and char:FindFirstChild("HumanoidRootPart")
+        end
+        local OrionLib={MakeNotification=function(_,info) notify(info.Name,info.Content,info.Time) end}
+        -- BEGIN supplied barrier spawn helper
+local function spawnToy(name, cframe)
+    if not LocalPlayer.Character then return nil end
+    local root = getRoot()
+    if not root then return nil end
+    local cf = cframe or (root.CFrame * CFrame.new(0, 5, 0))
+    SpawnToyRF:InvokeServer(name, cf, Vector3.zero)
+    task.wait(0.3)
+    for _, v in pairs(SpawnedInToys:GetChildren()) do
+        if v.Name == name then
+            return v
+        end
+    end
+    return nil
+end
+        -- END supplied barrier spawn helper
+        busy=true
+        task.spawn(function()
+            local ok,err=xpcall(function()
+                -- BEGIN supplied barrier action
+        HOption.breakBarriers = true
+        local pos = Vector3.new(263.4, -4.79, 466.8)
+        local spawnPos = CFrame.new(263.5, -4.5, 486.9)
+        local conn
+        conn = Workspace.ChildAdded:Connect(function(child)
+            if HOption.breakBarriers and child.Name == "Part" and (child.Position - pos).Magnitude <= 2 then
+                HOption.breakBarriers = false
+                conn:Disconnect()
+                for _, plot in pairs(Workspace.Plots:GetChildren()) do
+                    local barrier = plot:FindFirstChild("Barrier")
+                    if barrier then
+                        for _, part in pairs(barrier:GetChildren()) do
+                            if part:IsA("BasePart") then
+                                if saved[part]==nil then saved[part]=part.CanCollide end
+                                part.CanCollide = false
+                            end
+                        end
+                    end
+                end
+                OrionLib:MakeNotification({Name = "Success", Content = "Barriers destroyed!", Time = 3})
+            end
+        end)
+        activeConnection=conn
+        Hub.connections[conn]=true
+        for i = 1, 10 do
+            if not HOption.breakBarriers then break end
+            spawnToy("BallSnowball", spawnPos)
+            task.wait(1)
+        end
+        if HOption.breakBarriers then
+            HOption.breakBarriers = false
+            conn:Disconnect()
+            OrionLib:MakeNotification({Name = "Failed", Content = "Could not destroy barriers", Time = 3})
+        end
+                -- END supplied barrier action
+            end,debug.traceback)
+            cancel();busy=false
+            if not ok and Hub.alive then notify("Plot barriers",tostring(err),4) end
+        end)
+        return true
+    end
+    group:AddButton({Text="Break House Barriers",Func=Hub.breakPlotBarriers})
+    group:AddButton({Text="Restore plot barriers",Func=function() cancel();restore() end})
+    Hub.cleanup(function() cancel();restore();Hub.breakPlotBarriers=nil end)
+end)()
+end
+-- End plot-barrier sequence
+
+-- plot/slot utilities: range-checked actions and cancellable house visits.
+do
+(function()
+    local group=Tabs.Misc:AddLeftGroupbox("Plots & Slots")
+    local slotOn,houseOn=false,false
+    local selectedPlot="Plot3"
+    local nextSlot,nextHouse=0,0
+    local visit
+    local function selfRoot()
+        local char=Player.Character
+        local root=char and char:FindFirstChild("HumanoidRootPart")
+        local hum=char and char:FindFirstChildOfClass("Humanoid")
+        local held=Player:FindFirstChild("IsHeld")
+        if not root or not hum or hum.Health<=0 or hum.SeatPart or root.Anchored
+            or (held and held.Value) or Hub.safeZoneLoopActive or Hub.blobFlightActive then return end
+        for _,run in pairs(Hub.targetLoopRuns or {}) do if run.enabled then return end end
+        return root,char
+    end
+    local function grabOnce(part)
+        local root=selfRoot()
+        if not root or not part or not part:IsA("BasePart") or (root.Position-part.Position).Magnitude>30 then return false end
+        local events=ReplicatedStorage:FindFirstChild("GrabEvents")
+        local owner=events and events:FindFirstChild("SetNetworkOwner")
+        local grab=events and events:FindFirstChild("CreateGrabLine")
+        local drop=events and events:FindFirstChild("DestroyGrabLine")
+        if not owner or not grab or not drop then return false end
+        Hub.fire(owner,part,part.CFrame)
+        Hub.fire(grab,part,Vector3.zero,part.Position,false)
+        task.delay(0.2,function() if Hub.alive then pcall(function() Hub.fire(drop,part) end) end end)
+        return true
+    end
+    local function finishVisit()
+        if not visit then return end
+        local old=visit;visit=nil
+        if Player.Character==old.char and old.root.Parent==old.char
+            and (old.root.Position-old.destination).Magnitude<10 and not Hub.blobFlightActive then
+            old.root.CFrame=old.original
+            old.root.AssemblyLinearVelocity=Vector3.zero
+        end
+    end
+    group:AddDropdown("ToolPlot",{Text="Plot",Values={"Plot1","Plot2","Plot3","Plot4","Plot5"},Default=3,Callback=function(value) selectedPlot=value end})
+    group:AddButton({Text="Claim selected plot (nearby)",Func=function()
+        local plots=Workspace:FindFirstChild("Plots")
+        local plot=plots and plots:FindFirstChild(selectedPlot)
+        local sign=plot and plot:FindFirstChild("PlotSign")
+        local plus=sign and sign:FindFirstChild("Plus")
+        local part=plus and plus:FindFirstChild("PlusGrabPart")
+        if not grabOnce(part) then notify("Plot","Stand within 30 studs of the selected plot's claim sign. Character and grab remotes must be ready.",5) end
+    end})
+    group:AddToggle("ToolAutoSpin",{Text="Auto slot spin (nearby)",Default=false,Callback=function(on) slotOn=on;nextSlot=0 end})
+    group:AddToggle("ToolAutoSaveHouse",{Text="Auto save house time",Default=false,Callback=function(on)
+        houseOn=on;nextHouse=0;if not on then finishVisit() end
+    end})
+    function Hub.sampleToolAutomation()
+        local now=os.clock()
+        if slotOn and now>=nextSlot then
+            nextSlot=now+3
+            local slots=Workspace:FindFirstChild("Slots")
+            local ready,count,handle=true,0,nil
+            for _,slot in ipairs(slots and slots:GetChildren() or {}) do
+                local holder=slot:FindFirstChild("SlotHandle")
+                local light=holder and holder:FindFirstChild("LightBall")
+                if light then count+=1;if light.Material~=Enum.Material.Neon then ready=false end end
+                handle=handle or (holder and holder:FindFirstChild("Handle"))
+            end
+            if ready and count>0 then grabOnce(handle) end
+        end
+        if not houseOn or visit or now<nextHouse then return end
+        nextHouse=now+10
+        local root,char=selfRoot();if not root then return end
+        local plots=Workspace:FindFirstChild("Plots")
+        local items=Workspace:FindFirstChild("PlotItems")
+        for _,plot in ipairs(plots and plots:GetChildren() or {}) do
+            local sign=plot:FindFirstChild("PlotSign")
+            local owners=sign and sign:FindFirstChild("ThisPlotsOwners")
+            for _,owner in ipairs(owners and owners:GetChildren() or {}) do
+                local timer=owner:FindFirstChild("TimeRemainingNum")
+                if owner.Value==Player.Name and timer and type(timer.Value)=="number" and timer.Value<20 then
+                    local item=items and items:FindFirstChild(plot.Name)
+                    local area=item and item:FindFirstChild("PlotArea")
+                    if area and area:IsA("BasePart") then
+                        visit={root=root,char=char,original=root.CFrame,destination=area.Position}
+                        root.CFrame=area.CFrame
+                        local ticket=visit
+                        task.delay(1,function() if visit==ticket then finishVisit() end end)
+                        return
+                    end
+                end
+            end
+        end
+    end
+    local elapsed=0
+    Hub.connect(RunService.Heartbeat,function(dt) elapsed+=dt;if elapsed>=0.5 then elapsed=0;Hub.sampleToolAutomation() end end)
+    Hub.cleanup(function() slotOn,houseOn=false,false;finishVisit();Hub.sampleToolAutomation=nil end)
+end)();
+(function()
+    TargetGroup:AddButton({Text="Stop all action loops",Func=function()
+        local ids={}
+        for id in pairs(Toggles) do
+            local key=tostring(id):lower()
+            if (key:find("loop",1,true) and id~="AutoReseatBlobLoops") or key:find("aura",1,true)
+                or id=="ToolAutoSpin" or id=="ToolAutoSaveHouse" then table.insert(ids,id) end
+        end
+        for _,id in ipairs(ids) do
+            local toggle=Toggles[id]
+            if toggle.Value then pcall(function() toggle:SetValue(false) end) end
+        end
+        for _,run in pairs(Hub.targetLoopRuns or {}) do run.enabled=false end
+        if Hub.stopBlobFlight then Hub.stopBlobFlight() end
+        notify("Loops","Action loops stopped. Protections remain enabled.",4)
+    end})
+end)()
+end
+-- End  automation ports
+
+-- Local presentation tools inspired by the supplied code’s Perspective settings.
+do
+(function()
+    local group=Tabs.Visual:AddRightGroupbox("Camera Effects")
     local preset,strength="Off",50
     local gui,effect,overlay
     local disposed=false
@@ -8553,7 +9526,6 @@ do
         Callback=function(value) preset=value;apply() end})
     group:AddSlider("LocalCameraEffectStrength",{Text="Effect strength (%)",Default=50,Min=0,Max=100,Rounding=0,
         Callback=function(value) strength=value;apply() end})
-    group:AddLabel("Local overlay and color grading only. Turn Off to restore the normal view.")
     Hub.connect(Player.ChildAdded,function(child) if child:IsA("PlayerGui") then apply() end end)
     Hub.cleanup(function() disposed=true;clear() end)
 end)()
@@ -8571,24 +9543,9 @@ do
 		Callback=function(position) Hub.setMetricsPreference("metricsPosition",position) end})
 	widget:AddSlider("FloatingMetricsSize",{Text="Widget size (%)",Default=100,Min=80,Max=140,Rounding=0,
 		Callback=function(value) Hub.setMetricsPreference("metricsSize",value/100) end})
-	widget:AddLabel("Stays visible while the menu is closed and follows your theme. Updates twice per second.")
 end
 local ThemeGroup = Tabs.Customization:AddLeftGroupbox("Hub Theme")
 -- Optional creative tools. No ownership requests or changes to other players' toys.
-do
-    local selectors=Tabs.Updates:AddLeftGroupbox("ESP and Selector Polish")
-    selectors:AddLabel("Player ESP uses bold white lettering with a white character outline. Fill color remains separate. Player lists update in place without closing an open menu or resetting a player who is still listed. If your selected player leaves, the choice clears instead of switching to someone else.")
-    local fixes=Tabs.Updates:AddLeftGroupbox("Protection and Stability Fixes")
-    fixes:AddLabel("The extra ESP now uses the main ESP switch and appearance section. Action buttons have more room, padded text and bounded text scaling.")
-    fixes:AddLabel("Anti Paint ignores unrelated object removals. Joining and leaving players no longer rebuild every dropdown row, and roster refresh bursts are combined. Departed-player ownership and target respawn bindings are disconnected.")
-    fixes:AddLabel("Anti Paint and Blobman startup scans are spread over frames. Anti Blobman also checks detector parts and constraints that arrive after the toy appears, while leaving your own Blobman alone.")
-    fixes:AddLabel("Optional extreme velocity recovery and unwanted-seat protection are in Defense. Frame spike recording is in Anti Lag. They start off, so you can choose which protections suit your setup.")
-    local log=Tabs.Updates:AddLeftGroupbox("Creative Feature Pack")
-    log:AddLabel("Your toys now have their own manager. Refresh the list to locate a toy, bring it closer or put it into a named group. Groups keep their spacing when moved. Delete buttons need a separate switch enabled first.")
-    log:AddLabel("Creative Object Aura now includes Tornado, Blackhole and Star formations. Follow your cursor or click a spot to leave the formation there. Local decoration mode still works without spawning toys.")
-    log:AddLabel("Anchor highlights have separate fill and outline colors, transparency and optional labels. Player Options now includes map locations, custom coordinates, a detailed avatar/health ESP and adjustable follow positioning for your character.")
-    log:AddLabel("Menu Customization includes optional corner buttons for surface teleport, anchoring the held object and spawning a selected decorative toy. They use your hub theme and the existing action handlers.")
-end
 do
 (function()
     local manager=Tabs.Fun:AddRightGroupbox("My Toy Manager and Groups")
@@ -8617,6 +9574,7 @@ do
     local function root() return Player.Character and Player.Character:FindFirstChild("HumanoidRootPart") end
     local function report(text) status:SetText(text) end
     local picker
+    Hub.getOwnToySelection=function() return selected, table.clone(groups[groupName] or {}), groupName end
     local function refresh()
         list={};local labels={};local f=folder()
         if f then for _,model in ipairs(f:GetChildren()) do
@@ -8680,14 +9638,344 @@ do
     manager:AddButton("Move named group in front",function() move(groups[groupName] or {}) end)
     manager:AddButton("Release named group",function() groups[groupName]=nil;report("Group cleared. Your toys are unchanged.") end)
     manager:AddButton("Delete named group toys",function() delete(groups[groupName] or {}) end)
-    manager:AddLabel("Groups are session selections. Enter an existing group name to use it again.")
-    Hub.cleanup(function() table.clear(groups);table.clear(list) end)
+    Hub.cleanup(function() table.clear(groups);table.clear(list);Hub.getOwnToySelection=nil end)
+end)()
+end
+
+-- Named own-toy builds, adapted from the supplied code’s Compile Parts workflow.
+do
+(function()
+    local group = Tabs.Fun:AddLeftGroupbox("Own Toy Builder & Recovery")
+    local status = group:AddLabel("Select a header and toy group.")
+    local session, connection
+    local releaseHeader, autoRecover = false, true
+    local elapsed = 0
+    Hub.toyBuildClaims = {}
+
+    local function foreignOwner(part)
+        local owner = part:FindFirstChild("PartOwner")
+        if owner and (owner:IsA("StringValue") or owner:IsA("ObjectValue")) then
+            return owner.Value ~= nil and owner.Value ~= "" and owner.Value ~= Player.Name and owner.Value ~= Player
+        end
+        return false
+    end
+    function Hub.inspectOwnBuildToy(model)
+        local folder = Workspace:FindFirstChild(Player.Name .. "SpawnedInToys")
+        if not folder or not model or model.Parent ~= folder or not model:IsA("Model")
+            or model:FindFirstChildOfClass("Humanoid") or Players:GetPlayerFromCharacter(model) then return nil, "unsupported toy" end
+        local roots, seen = {}, {}
+        local parts = 0
+        for _, part in ipairs(model:GetDescendants()) do
+            if part:IsA("Humanoid") then return nil, "unsupported toy rig" end
+            if part:IsA("BodyMover") or part:IsA("AlignPosition") or part:IsA("AlignOrientation")
+                or part:IsA("LinearVelocity") or part:IsA("AngularVelocity") or part:IsA("VectorForce") or part:IsA("Torque") then
+                if not session or not session.controllers[part] then return nil, "another movement controller is using this toy" end
+            end
+            if part:IsA("BasePart") then
+                parts += 1
+                if parts > 256 or part.Anchored or part:IsA("Seat") or part:IsA("VehicleSeat") then return nil, "anchored, seated or oversized toy" end
+                if part:FindFirstChild("ArrivaCreativeAttachment") then return nil, "creative aura is using this toy" end
+                local root = part.AssemblyRootPart or part
+                if not root:IsDescendantOf(model) then return nil, "external assembly" end
+                if Hub.objectAttractionParts and Hub.objectAttractionParts[root] then return nil, "attraction aura is using this toy" end
+                if foreignOwner(part) then return nil, "ownership" end
+                if not seen[root] then seen[root] = true; table.insert(roots, root) end
+            end
+        end
+        if #roots == 0 then return nil, "no movable parts" end
+        for _, root in ipairs(roots) do
+            for _, member in ipairs(root:GetConnectedParts(true)) do
+                if not member:IsDescendantOf(model) or member.Anchored or member:IsA("Seat") or member:IsA("VehicleSeat") then return nil, "external or seated assembly" end
+            end
+        end
+        return roots, nil, parts
+    end
+
+    local function destroy(object)
+        Hub.instances[object] = nil
+        Hub.assetTargets[object] = nil
+        pcall(function() object:Destroy() end)
+    end
+    local function stop(message)
+        if connection then connection:Disconnect(); Hub.connections[connection] = nil; connection = nil end
+        if session then
+            for _, entry in ipairs(session.entries) do
+                if Hub.toyBuildClaims[entry.root] == session then Hub.toyBuildClaims[entry.root] = nil end
+                for _, object in ipairs(entry.objects) do destroy(object) end
+            end
+            if session.highlight then destroy(session.highlight) end
+        end
+        session, elapsed = nil, 0
+        status:SetText(message or "Build released. Temporary controllers were removed.")
+    end
+    local function enabledControllers(on)
+        for _, entry in ipairs(session.entries) do entry.position.Enabled = on; entry.orientation.Enabled = on end
+    end
+    local function compile()
+        local selected, models, name = Hub.getOwnToySelection()
+        if not selected or not models[selected] then status:SetText("Add the selected header toy to the current named group first."); return end
+        local headerRoots, reason = Hub.inspectOwnBuildToy(selected)
+        if not headerRoots then status:SetText("Header is unavailable: " .. reason); return end
+        local candidates, count, totalParts, physicalParts = {}, 0, 0, 0
+        for model in pairs(models) do
+            local roots, _, partCount = Hub.inspectOwnBuildToy(model)
+            if roots then
+                count += 1
+                totalParts += #roots
+                physicalParts += partCount
+                table.insert(candidates, {model = model, roots = roots})
+            end
+        end
+        if count < 2 then status:SetText("A build needs at least two eligible toys in the named group."); return end
+        if count > 16 or totalParts > 32 or physicalParts > 256 then status:SetText("Build limit: 16 toys, 32 assemblies and 256 parts."); return end
+        stop()
+        local header = selected.PrimaryPart and (selected.PrimaryPart.AssemblyRootPart or selected.PrimaryPart) or headerRoots[1]
+        if not table.find(headerRoots, header) then header = headerRoots[1] end
+        session = {entries = {}, controllers = {}, models = candidates, header = header, anchor = header.CFrame,
+            name = name, paused = false, resume = false, recoveringUntil = 0}
+        local ok, err = pcall(function()
+            for _, candidate in ipairs(candidates) do
+                for _, root in ipairs(candidate.roots) do
+                    local entry = {root = root, offset = header.CFrame:ToObjectSpace(root.CFrame), objects = {}}
+                    table.insert(session.entries, entry)
+                    Hub.toyBuildClaims[root] = session
+                    local attachment = Hub.new("Attachment", root)
+                    attachment.Name = "ArrivaOwnBuildAttachment"
+                    table.insert(entry.objects, attachment)
+                    local position = Hub.new("AlignPosition", root)
+                    session.controllers[position] = true
+                    table.insert(entry.objects, position)
+                    position.Name = "ArrivaOwnBuildPosition"
+                    position.Mode = Enum.PositionAlignmentMode.OneAttachment
+                    position.Attachment0 = attachment
+                    position.ApplyAtCenterOfMass = true
+                    position.MaxForce = 100000
+                    position.MaxVelocity = 40
+                    position.Responsiveness = 35
+                    position.Position = root.Position
+                    local orientation = Hub.new("AlignOrientation", root)
+                    session.controllers[orientation] = true
+                    table.insert(entry.objects, orientation)
+                    orientation.Name = "ArrivaOwnBuildOrientation"
+                    orientation.Mode = Enum.OrientationAlignmentMode.OneAttachment
+                    orientation.Attachment0 = attachment
+                    orientation.MaxTorque = 100000
+                    orientation.Responsiveness = 35
+                    orientation.CFrame = root.CFrame.Rotation
+                    entry.position, entry.orientation = position, orientation
+                end
+            end
+            local highlight = Hub.new("Highlight", selected)
+            session.highlight = highlight
+            highlight.Name = "ArrivaOwnBuildHeader"
+            highlight.Adornee = selected
+            highlight.FillTransparency = 0.9
+            highlight.OutlineTransparency = 0
+            highlight.OutlineColor = Color3.fromRGB(90, 230, 140)
+        end)
+        if not ok then stop("Could not create build controllers: " .. tostring(err)); return end
+        status:SetText(string.format("Compiled %s: %d toys / %d assemblies. The selected toy is the header.", name, count, totalParts))
+        connection = Hub.connect(RunService.Heartbeat, function(dt)
+            elapsed += dt
+            if elapsed >= 0.05 then elapsed = 0; Hub.sampleOwnToyBuild() end
+        end)
+    end
+    function Hub.sampleOwnToyBuild()
+        if not session then return end
+        local ownershipLost = false
+        local physicalParts = 0
+        for _, candidate in ipairs(session.models) do
+            local roots, reason, partCount = Hub.inspectOwnBuildToy(candidate.model)
+            if not roots then
+                if reason == "ownership" then ownershipLost = true
+                else stop("Build stopped: " .. reason .. "."); return end
+            else
+                physicalParts += partCount
+                if physicalParts > 256 or #roots ~= #candidate.roots then stop("Build stopped: the assembly structure or part budget changed."); return end
+                for _, root in ipairs(roots) do
+                    if Hub.toyBuildClaims[root] ~= session or not table.find(candidate.roots, root) then stop("Build stopped: an assembly changed. Compile the group again."); return end
+                end
+            end
+        end
+        if ownershipLost then
+            session.paused = true
+            enabledControllers(false)
+            session.highlight.OutlineColor = Color3.fromRGB(255, 170, 70)
+            status:SetText("Build paused: another owner is recorded. Re-grab your toys to recover ownership.")
+            return
+        end
+        if session.paused then
+            if not autoRecover and not session.resume then status:SetText("Ownership is available. Use Resume paused build."); return end
+            session.paused, session.resume = false, false
+            session.recoveringUntil = os.clock() + 1
+            session.highlight.OutlineColor = Color3.fromRGB(90, 230, 140)
+            status:SetText("Ownership returned: recovering the stored build formation.")
+        end
+        local recovering = os.clock() < session.recoveringUntil
+        if releaseHeader and not recovering then session.anchor = session.header.CFrame end
+        for _, entry in ipairs(session.entries) do
+            if not entry.root.Parent then stop("Build stopped: a root part disappeared."); return end
+            local goal = session.anchor * entry.offset
+            entry.position.Position = goal.Position
+            entry.orientation.CFrame = goal.Rotation
+            local active = entry.root ~= session.header or not releaseHeader or recovering
+            entry.position.Enabled, entry.orientation.Enabled = active, active
+        end
+    end
+    group:AddButton({Text = "Compile current named group", Func = compile})
+    group:AddToggle("OwnToyBuildReleaseHeader", {Text = "Release header for dragging", Default = false,
+        Callback = function(on) releaseHeader = on end})
+    group:AddToggle("OwnToyBuildAutoRecover", {Text = "Recover build when ownership returns", Default = true,
+        Callback = function(on) autoRecover = on end})
+    group:AddButton({Text = "Resume paused build", Func = function() if session then session.resume = true; Hub.sampleOwnToyBuild() end end})
+    group:AddButton({Text = "Disassemble current build", Func = function() stop() end})
+    Hub.connect(Player.CharacterRemoving, function() stop("Build released for character respawn.") end)
+    Hub.cleanup(function() stop(); Hub.sampleOwnToyBuild = nil; Hub.inspectOwnBuildToy = nil end)
+end)()
+end
+
+-- Local visual decoy formations inspired by the supplied code’s Decoy Follow feature.
+do
+(function()
+    local group = Tabs.Fun:AddRightGroupbox("Local Decoy Formation")
+    local enabled, connection = false, nil
+    local count, spacing, radius, orbitSpeed = 3, 5, 12, 0.5
+    local mode = "Follow row"
+    local folder, sourceCharacter, pivotOffset
+    local clones = {}
+    local elapsed, phase = 0, 0
+    local nextBuild = 0
+    local status = group:AddLabel("Local decoys are off.")
+
+    function Hub.decoyFormationOffset(shape, index, total, gap, ringRadius, rotation)
+        if shape == "Orbit" then
+            local angle = (index - 1) * math.pi * 2 / math.max(total, 1) + rotation
+            return Vector3.new(math.cos(angle) * ringRadius, 0, math.sin(angle) * ringRadius)
+        elseif shape == "Wedge" then
+            local row = math.ceil(index / 2)
+            return Vector3.new((index % 2 == 1 and -1 or 1) * row * gap, 0, row * gap)
+        end
+        return Vector3.new((index - (total + 1) / 2) * gap, 0, gap)
+    end
+    local function clear()
+        for _, clone in ipairs(clones) do
+            Hub.instances[clone] = nil
+            clone:Destroy()
+        end
+        table.clear(clones)
+        if folder then Hub.instances[folder] = nil; folder:Destroy(); folder = nil end
+        sourceCharacter, pivotOffset = nil, nil
+    end
+    local function build(char, root)
+        clear()
+        if os.clock() < nextBuild then return false end
+        nextBuild = os.clock() + 2
+        local originalArchivable = char.Archivable
+        char.Archivable = true
+        local ok, template = pcall(function() return char:Clone() end)
+        char.Archivable = originalArchivable
+        if not ok or not template then status:SetText("Could not clone this avatar. The live character is unchanged."); return false end
+        local descendants = template:GetDescendants()
+        if #descendants > 512 then template:Destroy(); status:SetText("Avatar is too complex for local decoys (512 descendant limit)."); return false end
+        local parts = 0
+        -- Sanitize before parenting any clone into the world.
+        for _, object in ipairs(descendants) do
+            if object:IsA("LuaSourceContainer") or object:IsA("Tool") or object:IsA("Sound")
+                or object:IsA("ParticleEmitter") or object:IsA("Trail") or object:IsA("Beam")
+                or object:IsA("BodyMover") or object:IsA("Constraint") or object:IsA("Highlight") or object:IsA("Animator")
+                or object:IsA("ForceField") then object:Destroy()
+            elseif object:IsA("BasePart") then
+                parts += 1
+                object.Anchored = true
+                object.CanCollide = false
+                object.CanTouch = false
+                object.CanQuery = false
+                object.Massless = true
+                object.Transparency = math.max(object.Transparency, 0.5)
+            elseif object:IsA("Humanoid") then
+                object.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+                object.AutoRotate = false
+            end
+        end
+        if parts == 0 or parts > 128 then template:Destroy(); status:SetText("Local decoys require an avatar with 1–128 parts."); return false end
+        template.Archivable = true
+        folder = Hub.new("Folder", Workspace)
+        folder.Name = "ArrivaLocalDecoyFormation"
+        local cloneOK, cloneError = pcall(function()
+            for index = 1, count do
+                local clone = template:Clone()
+                clone.Name = "ArrivaVisualDecoy" .. index
+                Hub.instances[clone] = true
+                table.insert(clones, clone)
+                local outline = Instance.new("Highlight")
+                outline.Adornee = clone
+                outline.FillTransparency = 0.9
+                outline.OutlineTransparency = 0.35
+                outline.OutlineColor = Color3.fromRGB(130, 185, 255)
+                outline.Parent = clone
+                clone.Parent = folder
+            end
+        end)
+        template:Destroy()
+        if not cloneOK then clear(); status:SetText("Could not create local decoys: " .. tostring(cloneError)); return false end
+        sourceCharacter = char
+        pivotOffset = root.CFrame:ToObjectSpace(char:GetPivot())
+        status:SetText(string.format("%d local visual decoys: %s.", #clones, mode))
+        return true
+    end
+    function Hub.sampleLocalDecoys(delta)
+        if not enabled then return end
+        local char = Player.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if not root or not hum or hum.Health <= 0 or not char:IsDescendantOf(Workspace) then
+            clear()
+            status:SetText("Waiting for your character.")
+            return
+        end
+        if sourceCharacter ~= char then if not build(char, root) then return end end
+        phase = (phase + math.min(delta or 0.05, 0.1) * orbitSpeed) % (math.pi * 2)
+        for index, clone in ipairs(clones) do
+            local offset = Hub.decoyFormationOffset(mode, index, #clones, spacing, radius, phase)
+            clone:PivotTo(root.CFrame * CFrame.new(offset) * pivotOffset)
+        end
+    end
+    local function start()
+        if connection then connection:Disconnect(); Hub.connections[connection] = nil; connection = nil end
+        clear()
+        elapsed, phase, nextBuild = 0, 0, 0
+        if not enabled then status:SetText("Local decoys are off."); return end
+        connection = Hub.connect(RunService.Heartbeat, function(dt)
+            elapsed += dt
+            if elapsed >= 0.05 then local delta = elapsed; elapsed = 0; Hub.sampleLocalDecoys(delta) end
+        end)
+    end
+    group:AddToggle("LocalDecoyFormationEnabled", {Text = "Local visual decoys", Default = false,
+        Callback = function(on) enabled = on; start() end})
+    group:AddDropdown("LocalDecoyFormationMode", {Text = "Formation", Values = {"Follow row", "Wedge", "Orbit"}, Default = 1,
+        Callback = function(value) mode = value; if enabled then status:SetText(string.format("%d local visual decoys: %s.", #clones, mode)) end end})
+    group:AddSlider("LocalDecoyFormationCount", {Text = "Decoy count", Default = 3, Min = 1, Max = 6, Rounding = 0,
+        Callback = function(value) count = value; if enabled then start() end end})
+    group:AddSlider("LocalDecoyFormationSpacing", {Text = "Row / wedge spacing", Default = 5, Min = 2, Max = 15, Rounding = 0,
+        Callback = function(value) spacing = value end})
+    group:AddSlider("LocalDecoyFormationRadius", {Text = "Orbit radius", Default = 12, Min = 4, Max = 25, Rounding = 0,
+        Callback = function(value) radius = value end})
+    group:AddSlider("LocalDecoyFormationSpeed", {Text = "Orbit speed", Default = 0.5, Min = 0, Max = 2, Rounding = 1,
+        Callback = function(value) orbitSpeed = value end})
+    group:AddButton({Text = "Rebuild local decoys", Func = function() if enabled then start() end end})
+    Hub.connect(Player.CharacterRemoving, function() clear(); nextBuild = 0 end)
+    Hub.cleanup(function()
+        enabled = false
+        if connection then connection:Disconnect(); Hub.connections[connection] = nil; connection = nil end
+        clear()
+        Hub.sampleLocalDecoys, Hub.decoyFormationOffset = nil, nil
+    end)
 end)()
 end
 
 do
 (function()
-    local group=Tabs.Player:AddRightGroupbox("Map Locations")
+    local group=Tabs.Misc:AddLeftGroupbox("Travel")
     local locations={Spawn=Vector3.new(4,-7,-3),["Safe Zone"]=Vector3.new(606,124,-101),
         ["Farm House"]=Vector3.new(-234,83,-324),["Blue Safe House"]=Vector3.new(538,96,-372),
         ["Big Cave"]=Vector3.new(17,-7,539),["Train Cave"]=Vector3.new(500,62,-307),
@@ -8716,7 +10004,6 @@ do
         local r=Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
         if r then Options.MapCustomCoordinates:SetValue(string.format("%.2f, %.2f, %.2f",r.Position.X,r.Position.Y,r.Position.Z)) end
     end)
-    group:AddLabel("Named coordinates come from the reference script and may change with map updates.")
 end)()
 end
 
@@ -8736,7 +10023,6 @@ do
     group:AddSlider("SelfFollowDistance",{Text="Distance",Default=8,Min=3,Max=40,Rounding=0,Callback=function(value) distance=value end})
     group:AddSlider("SelfFollowHeight",{Text="Height offset",Default=0,Min=0,Max=20,Rounding=0,Callback=function(value) height=value end})
     group:AddToggle("SelfFollowEnabled",{Text="Follow selected player",Default=false,Callback=function(on) enabled=on end})
-    group:AddLabel("Moves your character only. Pauses for seats, death or the safe-zone loop.")
     Hub.connect(Players.PlayerAdded,function() Hub.queueRefresh("follow",refresh) end);Hub.connect(Players.PlayerRemoving,function(p) if p==target then target=nil end;Hub.queueRefresh("follow",refresh) end)
     Hub.connect(RunService.Heartbeat,function(dt)
         if not enabled or Hub.safeZoneLoopActive then return end
@@ -8818,7 +10104,6 @@ do
     button("Spawn selected toy",112,function() if Hub.quickSpawnCreativeToy then Hub.quickSpawnCreativeToy() end end)
     group:AddToggle("TouchActionsEnabled",{Text="Show action buttons",Default=false,Callback=function(on) gui.Enabled=on end})
     group:AddDropdown("TouchActionsPosition",{Text="Action button corner",Values={"Bottom right","Bottom left","Top right","Top left"},Default=1,Callback=function(value) position=value;place() end})
-    group:AddLabel("TP uses the aimed surface. Spawn uses the Shape Toy Picker selection.")
     place()
 end)()
 end
@@ -8832,7 +10117,6 @@ ThemeGroup:AddDropdown("SidebarTheme", {
 })
 do
 	local appearance=Tabs.Customization:AddRightGroupbox("Custom Theme Colors")
-	appearance:AddLabel("Select Custom in Hub Theme. Click a color swatch to open the picker; HEX entry also works.")
 	local function field(id,label,key,value)
 		appearance:AddInput(id,{Text=label,Default=value,Finished=true,
 			Callback=function(color)
@@ -8872,7 +10156,7 @@ do
 if not game:IsLoaded() then game.Loaded:Wait() end
 task.wait(2)
 local ok,err=pcall(function()
-    local source=game:HttpGet("https://raw.githubusercontent.com/arrivabus415/ArrivaCoreHub/main/main.lua")
+    local source=game:HttpGet("https://raw.githubusercontent.com/arrivaassistantappeals-sys/huhwahtwhen/main/dist/resonance.lua")
     local run,compileError=loadstring(source)
     if not run then error(compileError) end
     run()
@@ -8890,41 +10174,6 @@ if not ok then warn("[Arriva auto execute] " .. tostring(err)) end
 		task.delay(10,function() busy=false end)
 	end})
 end
-do
-	local section0=Tabs.Updates:AddLeftGroupbox("Version 2.0")
-	section0:AddLabel("The menu has had a bit of a tidy-up. There are more ways to make it yours, notifications are clearer, and the larger settings groups now have their own tabs.")
-	section0:AddLabel("Your saved settings still use the same controls, so moving things around should not mean setting everything up again.")
-	local section1=Tabs.Updates:AddLeftGroupbox("A little more Arriva")
-	section1:AddLabel("The header now uses the Arriva emblem, with a slanted title to sit alongside it. The logo stays in its original proportions.")
-	section1:AddLabel("This update log has its own tab now. Notes are grouped by what changed, instead of being squeezed into UI Settings.")
-	local section2=Tabs.Updates:AddLeftGroupbox("Make the menu yours")
-	section2:AddLabel("Themes, custom colors and appearance controls now live in Menu Customization. Pick a preset or choose Custom to build your own look.")
-	section2:AddLabel("Custom colors have clickable pickers as well as HEX boxes. You can change the background, accent and text colors; the rest of the palette follows those choices.")
-	section2:AddLabel("Added Rose, Ocean and Amber alongside the earlier themes. Slider fills, tracks, inputs and toggles follow the selected palette.")
-	section2:AddLabel("Turning off the rainbow border removes the outline completely. Border thickness, animation speed and menu scale are adjustable too.")
-	local section3=Tabs.Updates:AddLeftGroupbox("Notifications")
-	section3:AddLabel("Notifications remain visible when the main menu is closed. They stack in order and close the gaps when older messages disappear.")
-	section3:AddLabel("Long headings and messages have room to wrap. Text contrast, spacing and header alignment have also been adjusted.")
-	section3:AddLabel("Different events have their own icons, including joins, departures, warnings and respawns. Event colors stay separate from the menu theme.")
-	section3:AddLabel("You can choose the position, size, duration and number of visible notifications. There is a preview button to try the settings before leaving the menu.")
-	section3:AddLabel("Fixed an older message format that could show the duration as the body text.")
-	local section4=Tabs.Updates:AddLeftGroupbox("Anti Lag and connection alerts")
-	section4:AddLabel("Automatic line protection and connection settings now have a dedicated Anti Lag tab. Force Anti Lag is still in Defense.")
-	section4:AddLabel("Auto Anti Lag can switch local line protection on during a burst, then restore the previous setting after a quiet period. Manual protection takes priority.")
-	section4:AddLabel("The line threshold, detection window and quiet period are adjustable. Optional ping and client-performance alerts also have their own thresholds and repeat cooldowns.")
-	section4:AddLabel("These alerts report what your client sees. They do not identify who caused a slowdown.")
-	local section5=Tabs.Updates:AddLeftGroupbox("Controls and small fixes")
-	section5:AddLabel("Grab Options is separated from Grab Customization, and the FPS buttons have clearer names.")
-	section5:AddLabel("The G-key object anchor now checks the grab attachment instead of relying on nearby touching parts. Changing the bind no longer activates it.")
-	section5:AddLabel("Opening the menu releases the cursor; closing it restores the previous mouse state. The separate mouse shortcut is still available.")
-	section5:AddLabel("Adjusted the scroll gutter and section headings to give the controls a little more breathing room.")
-	local section6=Tabs.Updates:AddLeftGroupbox("Rejoining")
-	section6:AddLabel("UI Settings now has Rejoin + Auto Execute for setups that support teleport queuing. It loads the main hub from the Arriva GitHub repository after rejoining.")
-	section6:AddLabel("If the required executor feature is missing, the button shows a message instead of silently failing.")
-	local section7=Tabs.Updates:AddLeftGroupbox("Testing notes")
-	section7:AddLabel("This build has passed a syntax check. Some earlier UI and monitor changes also have mocked checks, but those do not replace testing inside the game.")
-	section7:AddLabel("If something still looks off, a screenshot and the name of the setting help narrow it down.")
-end
 
 do
 	local events=Tabs.Notifications:AddLeftGroupbox("Player Events")
@@ -8937,7 +10186,6 @@ do
 	toggle("NotifyPlayerLeaves","Player left","leaves")
 	toggle("NotifyPlayerRespawns","Player respawned","respawns")
 	toggle("NotifyMyCharacter","My death and respawn","self")
-	events:AddLabel("A player's first character spawn is not counted as a respawn. Repeated respawn alerts have an eight-second cooldown per player.")
 	local function disconnect(connection)
 		if connection then connection:Disconnect();Hub.connections[connection]=nil end
 	end
@@ -8997,7 +10245,7 @@ do
 		reloading=true
 		notify("Reload Hub","Checking the latest hub version...",3)
 		local ok,compiled=pcall(function()
-			local source=game:HttpGet("https://raw.githubusercontent.com/arrivabus415/ArrivaCoreHub/main/main.lua")
+			local source=game:HttpGet("https://raw.githubusercontent.com/arrivaassistantappeals-sys/huhwahtwhen/main/dist/resonance.lua")
 			local run,err=loadstring(source)
 			if not run then error(err) end
 			return run
@@ -9025,7 +10273,6 @@ do
 	end})
 end
 MenuGroup:AddButton("Unload", function() Library:Unload() end)
-MenuGroup:AddLabel("Emergency unload: End by default; edit shortcuts in KeyBinds", true)
 Hub.connect(UserInputService.InputBegan, function(input, processed)
 	if processed or UserInputService:GetFocusedTextBox() then return end
 	if Hub.matchesKeybind("EmergencyUnloadKey", input, "End") then Library:Unload() end
@@ -9096,13 +10343,12 @@ MenuGroup:AddButton({Text = "Save status", Func = function()
 	if Hub.lastSnapshotError then message ..= " | Snapshot error: " .. Hub.lastSnapshotError end
 	notify("Config", message, 8)
 end})
-MenuGroup:AddLabel("Saved toggles restore their previous state. Whitelist selections use their separate safety file.", true)
 MenuGroup:AddButton({Text = "Load Infinite Yield (external)", Func = function()
 	task.spawn(function() Hub.fetch("https://raw.githubusercontent.com/EdgeIY/infiniteyield/master/source") end)
 end})
 Hub.cleanup(function()
 	-- Explicit restoration, since remaining tasks are canceled on unload.
-	unfreezeChar(Player.Character)
+	if Hub.releaseGrabProtection then Hub.releaseGrabProtection() end
 	stopNoclip()
 	RemoveAllBoxes()
 	disconnectWatchers()
